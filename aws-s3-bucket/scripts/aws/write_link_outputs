@@ -19,33 +19,28 @@ echo "Reading Terraform outputs for link $LINK_ID_VAL..."
 AWS_ACCESS_KEY_ID=$(tofu output -raw aws_access_key_id 2>/dev/null || echo "")
 AWS_SECRET_ACCESS_KEY=$(tofu output -raw aws_secret_access_key 2>/dev/null || echo "")
 IAM_USER_NAME=$(tofu output -raw iam_user_name 2>/dev/null || echo "")
-BUCKET_NAME=$(tofu output -raw bucket_name 2>/dev/null || echo "")
-REGION=$(tofu output -raw region 2>/dev/null || echo "")
 
 if [ -z "$AWS_ACCESS_KEY_ID" ]; then
   echo "WARNING: No aws_access_key_id output found. Skipping link attribute update."
   exit 0
 fi
 
+# Only persist attributes unique to the link. bucket_name and region are
+# already exposed by the service itself (see service-spec.json.tpl) — keeping
+# them here would duplicate the env vars injected into linked apps.
 ATTRS=$(jq -n \
   --arg access_key_id     "$AWS_ACCESS_KEY_ID" \
   --arg secret_access_key "$AWS_SECRET_ACCESS_KEY" \
   --arg iam_user_name     "$IAM_USER_NAME" \
-  --arg bucket_name       "$BUCKET_NAME" \
-  --arg region            "$REGION" \
   '{
     aws_access_key_id:     $access_key_id,
     aws_secret_access_key: $secret_access_key,
-    aws_region:            $region,
-    s3_bucket_name:        $bucket_name,
     iam_user_name:         $iam_user_name
   }')
 
 echo "Updating link $LINK_ID_VAL attributes:"
 echo "  aws_access_key_id:     $AWS_ACCESS_KEY_ID"
 echo "  aws_secret_access_key: ****"
-echo "  aws_region:            $REGION"
-echo "  s3_bucket_name:        $BUCKET_NAME"
 echo "  iam_user_name:         $IAM_USER_NAME"
 
 np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}"
