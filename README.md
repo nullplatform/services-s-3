@@ -111,7 +111,6 @@ module "service_definition_aws_s3_bucket" {
   repository_org    = "nullplatform"
   repository_name   = "services-s-3"
   repository_branch = "main"
-  repository_token  = var.github_token   # required (private repo)
   service_path      = "aws-s3-bucket"
 
   service_name = "AWS S3 Bucket"
