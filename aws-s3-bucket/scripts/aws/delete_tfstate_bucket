@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# delete_tfstate_bucket — Removes the per-instance S3 tfstate bucket after
+# tofu destroy has run and the state file is no longer needed.
+#
+# Versioned buckets must be emptied (all versions + delete markers) before
+# deletion. Uses delete-objects (batch) to avoid jq pipeline failures when
+# the bucket is empty (list-object-versions returns null for empty buckets).
+#
+# Expected environment variables (exported by build_context):
+#   TFSTATE_BUCKET — name of the bucket to delete (np-service-<SERVICE_ID>)
+# ---------------------------------------------------------------------------
+
+if [ -z "${REGION:-}" ]; then
+  echo "ERROR: REGION is not set. Expected to be exported by build_context." >&2
+  exit 1
+fi
+
+if [ -z "${TFSTATE_BUCKET:-}" ]; then
+  echo "TFSTATE_BUCKET is not set, skipping bucket cleanup."
+  exit 0
+fi
+
+if ! aws s3api head-bucket --bucket "$TFSTATE_BUCKET" --region "$REGION" 2>/dev/null; then
+  echo "Bucket ${TFSTATE_BUCKET} does not exist, nothing to delete."
+  exit 0
+fi
+
+delete_objects() {
+  local query="$1"
+  local label="$2"
+  local objects
+  local rc=0
+
+  objects=$(aws s3api list-object-versions \
+    --bucket "$TFSTATE_BUCKET" \
+    --region "$REGION" \
+    --query "${query}" \
+    --output json) || rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    echo "WARNING: list-object-versions failed (exit $rc) for ${label}, skipping."
+    return 0
+  fi
+
+  if [ "$objects" = "null" ] || [ -z "$objects" ] || [ "$objects" = "[]" ]; then
+    echo "No ${label} to delete."
+    return 0
+  fi
+
+  echo "Deleting ${label}..."
+  local tmpfile
+  tmpfile=$(mktemp)
+  printf '{"Objects": %s, "Quiet": true}' "$objects" > "$tmpfile"
+  aws s3api delete-objects \
+    --bucket "$TFSTATE_BUCKET" \
+    --region "$REGION" \
+    --delete "file://${tmpfile}"
+  rm -f "$tmpfile"
+}
+
+delete_objects 'Versions[].{Key:Key,VersionId:VersionId}' "object versions"
+delete_objects 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' "delete markers"
+
+echo "Deleting bucket ${TFSTATE_BUCKET}..."
+aws s3api delete-bucket --bucket "$TFSTATE_BUCKET" --region "$REGION"
+echo "Bucket ${TFSTATE_BUCKET} deleted."

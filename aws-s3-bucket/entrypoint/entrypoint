@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ -z "${NP_ACTION_CONTEXT:-}" ]; then
+  echo "NP_ACTION_CONTEXT is not set. Exiting."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Bridge agent API key to the np CLI.
+# np-agent passes NP_API_KEY; the np CLI expects NULLPLATFORM_API_KEY.
+# Without this bridge, commands like "np service patch" fail with:
+#   "please login first, refresh token or organization id not found"
+# ---------------------------------------------------------------------------
+if [ -n "${NP_API_KEY:-}" ] && [ -z "${NULLPLATFORM_API_KEY:-}" ]; then
+  export NULLPLATFORM_API_KEY="$NP_API_KEY"
+fi
+
+CLEAN_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | sed "s/^'//;s/'$//")
+export NP_ACTION_CONTEXT="$CLEAN_CONTEXT"
+
+export CONTEXT=$(echo "$CLEAN_CONTEXT" | jq '.notification')
+export SERVICE_ACTION=$(echo "$CONTEXT"      | jq -r '.slug')
+export SERVICE_ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type')
+export NOTIFICATION_ACTION=$(echo "$CONTEXT" | jq -r '.action')
+export LINK=$(echo "$CONTEXT"                | jq '.link')
+
+ACTION_SOURCE=service
+IS_LINK_ACTION=$(echo "$CONTEXT" | jq '.link != null')
+
+if [ "$IS_LINK_ACTION" = "true" ]; then
+  ACTION_SOURCE=link
+fi
+
+export WORKING_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+SERVICE_PATH=""
+OVERRIDES_PATH=""
+
+for arg in "$@"; do
+  case $arg in
+    --service-path=*)
+      SERVICE_PATH="${arg#*=}"
+      ;;
+    --overrides-path=*)
+      OVERRIDES_PATH="${arg#*=}"
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      exit 1
+      ;;
+  esac
+done
+
+SERVICE_PATH="${SERVICE_PATH:-$(dirname "$WORKING_DIRECTORY")}"
+
+if [[ "$SERVICE_PATH" != /* ]]; then
+  if [ -d "$SERVICE_PATH" ]; then
+    SERVICE_PATH="$(cd "$SERVICE_PATH" && pwd)"
+  elif [ -d "$HOME/.np/$SERVICE_PATH" ]; then
+    SERVICE_PATH="$(cd "$HOME/.np/$SERVICE_PATH" && pwd)"
+  else
+    echo "ERROR: Cannot resolve SERVICE_PATH='$SERVICE_PATH' from CWD=$(pwd) or $HOME/.np/"
+    exit 1
+  fi
+fi
+
+OVERRIDES_PATH="${OVERRIDES_PATH:-$SERVICE_PATH/overrides}"
+
+export SERVICE_PATH
+export OVERRIDES_PATH
+export ACTION_SOURCE
+
+np service-action exec --live-output --live-report --script="$WORKING_DIRECTORY/$ACTION_SOURCE"

@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# write_service_outputs — Reads Terraform outputs from the deployment module
+# and writes them to the NP service attributes via the API.
+#
+# Fields with "export: true" in the service spec (bucket_name, bucket_arn,
+# bucket_region) become env vars in apps when a link is activated.
+# ---------------------------------------------------------------------------
+
+cd "$OUTPUT_DIR"
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+
+echo "Reading Terraform outputs for service $SERVICE_ID..."
+
+BUCKET_NAME=$(tofu output -raw bucket_name 2>/dev/null || echo "")
+BUCKET_ARN=$(tofu output -raw bucket_arn 2>/dev/null || echo "")
+BUCKET_REGION=$(tofu output -raw bucket_region 2>/dev/null || echo "")
+
+if [ -z "$BUCKET_NAME" ]; then
+  echo "WARNING: No bucket_name output found. Skipping attribute update."
+  exit 0
+fi
+
+ATTRS=$(jq -n \
+  --arg bucket_name   "$BUCKET_NAME" \
+  --arg bucket_arn    "$BUCKET_ARN" \
+  --arg bucket_region "$BUCKET_REGION" \
+  '{
+    bucket_name:   $bucket_name,
+    bucket_arn:    $bucket_arn,
+    bucket_region: $bucket_region
+  }')
+
+echo "Updating service $SERVICE_ID attributes:"
+echo "  bucket_name:   $BUCKET_NAME"
+echo "  bucket_arn:    $BUCKET_ARN"
+echo "  bucket_region: $BUCKET_REGION"
+
+np service patch --id "$SERVICE_ID" --body "{\"attributes\": $ATTRS}"
+echo "Service attributes updated successfully."

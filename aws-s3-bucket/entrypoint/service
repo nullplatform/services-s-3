@@ -1,0 +1,28 @@
+#!/bin/bash
+
+echo "Executing service action=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE"
+
+ACTION_TO_EXECUTE="$SERVICE_ACTION_TYPE"
+
+case "$SERVICE_ACTION_TYPE" in
+  "custom")
+    ACTION_TO_EXECUTE="$SERVICE_ACTION"
+    ;;
+esac
+
+WORKFLOW_PATH="$SERVICE_PATH/workflows/aws/$ACTION_TO_EXECUTE.yaml"
+OVERRIDES_WORKFLOW_PATH="$OVERRIDES_PATH/workflows/aws/$ACTION_TO_EXECUTE.yaml"
+VALUES_PATH="$SERVICE_PATH/values.yaml"
+
+CMD="np service workflow exec --workflow $WORKFLOW_PATH"
+
+if [[ -f "$VALUES_PATH" ]]; then
+  CMD="$CMD --values $VALUES_PATH"
+fi
+
+if [[ -f "$OVERRIDES_WORKFLOW_PATH" ]]; then
+  CMD="$CMD --overrides $OVERRIDES_WORKFLOW_PATH"
+fi
+
+echo "Executing command: $CMD"
+eval "$CMD"

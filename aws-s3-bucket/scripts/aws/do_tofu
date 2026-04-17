@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# do_tofu — Copies the Terraform module to OUTPUT_DIR and executes tofu.
+#
+# Expected environment variables (set by build_context or build_permissions_context):
+#   OUTPUT_DIR          — working directory for this execution
+#   TOFU_MODULE_DIR     — path to the Terraform module (deployment/ or permissions/)
+#   TOFU_INIT_VARIABLES — -backend-config= flags for tofu init
+#   TOFU_VARIABLES      — -var= flags for tofu apply/destroy
+#
+# Set by the workflow YAML configuration block:
+#   TOFU_ACTION         — "apply" or "destroy"
+# ---------------------------------------------------------------------------
+
+TOFU_ACTION="${TOFU_ACTION:-apply}"
+
+# ---------------------------------------------------------------------------
+# Ensure tofu is available. On agents where tofu is not pre-installed, download
+# and cache the binary in /tmp/np-tofu-bin so it is only fetched once per pod
+# lifetime (the directory survives across actions but is cleared on pod restart).
+# ---------------------------------------------------------------------------
+if ! command -v tofu &>/dev/null; then
+  # 1.10+ is required for native S3 state locking (use_lockfile=true).
+  TOFU_VERSION="1.11.6"
+  TOFU_BIN_DIR="/tmp/np-tofu-bin"
+  TOFU_BIN="$TOFU_BIN_DIR/tofu"
+
+  if [ ! -f "$TOFU_BIN" ]; then
+    echo "tofu not found in PATH, installing v${TOFU_VERSION} to ${TOFU_BIN_DIR}..."
+    mkdir -p "$TOFU_BIN_DIR"
+    curl -fsSL \
+      "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.zip" \
+      -o /tmp/tofu.zip
+    unzip -qo /tmp/tofu.zip tofu -d "$TOFU_BIN_DIR"
+    chmod +x "$TOFU_BIN"
+    rm -f /tmp/tofu.zip
+    echo "tofu installed: $("$TOFU_BIN" version | head -1)"
+  else
+    echo "Using cached tofu at ${TOFU_BIN}"
+  fi
+
+  export PATH="$TOFU_BIN_DIR:$PATH"
+fi
+
+cd "$OUTPUT_DIR"
+
+cp -r "$TOFU_MODULE_DIR"/* .
+
+echo "Running: tofu init"
+# shellcheck disable=SC2086
+tofu init $TOFU_INIT_VARIABLES
+
+echo "Running: tofu $TOFU_ACTION"
+# shellcheck disable=SC2086
+tofu "$TOFU_ACTION" -auto-approve $TOFU_VARIABLES

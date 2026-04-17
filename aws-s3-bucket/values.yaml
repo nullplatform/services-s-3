@@ -1,0 +1,12 @@
+# AWS S3 Bucket Service — Static Configuration
+# These values are not exposed in the NP UI. They configure the execution
+# environment for the agent running this service.
+#
+# NOTE: In scripts, $VALUES is a FILE PATH (set by np service workflow exec --values).
+#       It is NOT JSON content. Read values with yaml_value() from build_context.
+
+# Named AWS profile for local testing (e.g. SSO profile with S3/IAM access)
+# If set and AWS_PROFILE is not already in the environment, build_context
+# will export it so Terraform and AWS CLI use the correct credentials.
+# Run "aws sso login --profile <name>" before starting np-agent locally.
+aws_profile: ""
