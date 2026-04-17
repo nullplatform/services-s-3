@@ -1,0 +1,77 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# build_permissions_context — Prepares the Terraform execution environment
+# for link actions (link/unlink). Runs AFTER build_context, which has set:
+#   $CONTEXT, $VALUES, $SERVICE_PATH, $LINK_ID, $LINK_ACCESS_LEVEL,
+#   $LINK_PATH_PREFIX, $TFSTATE_BUCKET, $REGION
+#
+# This script creates a dedicated IAM user (+ access key) per link, with
+# an inline policy scoped to the target S3 bucket.
+# ---------------------------------------------------------------------------
+
+# IMPORTANT: This script has its own yaml_value() function.
+# Shell functions do NOT carry over between scripts; each script is isolated.
+yaml_value() {
+  local key="$1" default="$2" file="$3"
+  local val
+  val=$(grep "^${key}:" "$file" 2>/dev/null | sed 's/^[^:]*: *//;s/^"//;s/"$//' | head -1)
+  echo "${val:-$default}"
+}
+
+if [ -z "${REGION:-}" ]; then
+  echo "ERROR: REGION is not set. Expected to be exported by build_context." >&2
+  exit 1
+fi
+
+if [ -z "${TFSTATE_BUCKET:-}" ]; then
+  echo "ERROR: TFSTATE_BUCKET is not set. Expected to be exported by build_context." >&2
+  exit 1
+fi
+
+AWS_PROFILE_VAL=$(yaml_value "aws_profile" "" "$VALUES")
+
+if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
+  export AWS_PROFILE="${AWS_PROFILE_VAL}"
+fi
+
+# --- Read service outputs (set by write_service_outputs after bucket creation) -
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+SERVICE_ATTRS=$(echo "$CONTEXT" | jq -r '.service.attributes // {}')
+
+BUCKET_NAME=$(echo "$SERVICE_ATTRS"   | jq -r '.bucket_name   // ""')
+BUCKET_ARN=$(echo "$SERVICE_ATTRS"    | jq -r '.bucket_arn    // ""')
+BUCKET_REGION=$(echo "$SERVICE_ATTRS" | jq -r '.bucket_region // ""')
+
+if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ARN" ]; then
+  echo "ERROR: bucket_name/bucket_arn not found in service attributes." >&2
+  echo "       Has the bucket been created and write_service_outputs completed?" >&2
+  exit 1
+fi
+
+# Use the bucket's actual region (not the account default) for the IAM call.
+if [ -n "$BUCKET_REGION" ]; then
+  export REGION="$BUCKET_REGION"
+fi
+
+# --- Derive link-specific IAM user name from link ID -----------------------
+# Deterministic: always produces the same name for the same link.
+# Format: np-s3-<first 16 hex chars of link ID>  (~22 chars, safe for IAM)
+
+IAM_USER_NAME="np-s3-$(echo "${LINK_ID}" | tr -d '-' | cut -c1-16 | tr '[:upper:]' '[:lower:]')"
+
+# --- Prepare link-specific working directory --------------------------------
+# Override OUTPUT_DIR so each link has its own isolated workspace and tfstate.
+
+export OUTPUT_DIR="/tmp/np-link-${LINK_ID}"
+mkdir -p "$OUTPUT_DIR"
+
+# --- Set Terraform execution variables -------------------------------------
+
+export TOFU_MODULE_DIR="$SERVICE_PATH/permissions"
+
+export TOFU_INIT_VARIABLES="-backend-config=bucket=${TFSTATE_BUCKET} -backend-config=key=services/aws-s3-bucket/${SERVICE_ID}/links/${LINK_ID}.tfstate -backend-config=region=${REGION} -backend-config=use_lockfile=true"
+
+export TOFU_VARIABLES="-var=link_id=${LINK_ID} -var=region=${REGION} -var=bucket_name=${BUCKET_NAME} -var=bucket_arn=${BUCKET_ARN} -var=iam_user_name=${IAM_USER_NAME} -var=access_level=${LINK_ACCESS_LEVEL:-read-write} -var=path_prefix=${LINK_PATH_PREFIX:-}"

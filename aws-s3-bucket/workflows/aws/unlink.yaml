@@ -1,0 +1,42 @@
+steps:
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/aws/build_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: REGION
+        type: environment
+      - name: TFSTATE_BUCKET
+        type: environment
+      - name: LINK_ID
+        type: environment
+      - name: LINK_NAME
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: SCOPE_NRN
+        type: environment
+      - name: LINK_ACCESS_LEVEL
+        type: environment
+      - name: LINK_PATH_PREFIX
+        type: environment
+
+  - name: build permissions context
+    type: script
+    file: $SERVICE_PATH/scripts/aws/build_permissions_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/aws/do_tofu
+    configuration:
+      TOFU_ACTION: destroy

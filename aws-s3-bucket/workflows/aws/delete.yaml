@@ -1,0 +1,27 @@
+steps:
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/aws/build_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: REGION
+        type: environment
+      - name: TFSTATE_BUCKET
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/aws/do_tofu
+    configuration:
+      TOFU_ACTION: destroy
+
+  - name: cleanup tfstate bucket
+    type: script
+    file: $SERVICE_PATH/scripts/aws/delete_tfstate_bucket
