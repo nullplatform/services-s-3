@@ -51,24 +51,6 @@
           "description": "IAM user secret access key (auto-populated, delivered as secret env var)",
           "order": 4
         },
-        "aws_region": {
-          "type": "string",
-          "title": "AWS Region",
-          "export": {"type": "environment_variable"},
-          "visibleOn": ["read"],
-          "editableOn": [],
-          "description": "AWS region of the bucket (auto-populated)",
-          "order": 5
-        },
-        "s3_bucket_name": {
-          "type": "string",
-          "title": "S3 Bucket Name",
-          "export": {"type": "environment_variable"},
-          "visibleOn": ["read"],
-          "editableOn": [],
-          "description": "S3 bucket name (auto-populated)",
-          "order": 6
-        },
         "iam_user_name": {
           "type": "string",
           "export": false,

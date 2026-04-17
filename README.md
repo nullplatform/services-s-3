@@ -8,7 +8,7 @@ The service lives under [`aws-s3-bucket/`](./aws-s3-bucket) to keep the repo ope
 
 - Provisions an S3 bucket via OpenTofu (versioning, server-side encryption, public access block)
 - Creates a dedicated IAM user per link with an inline policy scoped to the bucket (and optional path prefix)
-- Exposes `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, and `S3_BUCKET_NAME` as env vars to linked apps
+- Exposes `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` per link (each linked app gets its own IAM user) plus `BUCKET_NAME` / `BUCKET_ARN` / `BUCKET_REGION` from the service itself
 - Stores per-instance OpenTofu state in a dedicated bucket (`np-service-<SERVICE_ID>`) with native S3 locking (`use_lockfile=true`)
 
 ## Repository Layout
@@ -60,12 +60,12 @@ Exposed in the nullplatform UI when creating/updating the service:
 
 ## Link Attributes (per link, exported as env vars)
 
+Only credentials are exposed at the link level — bucket identity (name / ARN / region) comes from the service attributes above to avoid duplicate env vars in linked apps.
+
 | Attribute | Env Var Type | Description |
 |---|---|---|
 | `aws_access_key_id` | plain | IAM user access key ID |
 | `aws_secret_access_key` | secret | IAM user secret access key |
-| `aws_region` | plain | Bucket region |
-| `s3_bucket_name` | plain | Bucket name |
 
 ## Workflows
 
