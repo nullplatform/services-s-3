@@ -1,0 +1,10 @@
+name: conventional-commit
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  conventional-commit:
+    uses: nullplatform/actions-nullplatform/.github/workflows/conventional-commit.yml@main
