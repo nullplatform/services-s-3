@@ -21,6 +21,12 @@ steps:
         type: environment
       - name: LINK_PATH_PREFIX
         type: environment
+      - name: BUCKET_NAME
+        type: environment
+      - name: BUCKET_ARN
+        type: environment
+      - name: BUCKET_REGION
+        type: environment
 
   - name: build permissions context
     type: script
