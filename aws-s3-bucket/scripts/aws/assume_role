@@ -1,0 +1,25 @@
+#!/bin/bash
+# Sourceable helper — do NOT execute directly.
+# Reads assume_role_arn from $VALUES. If set, calls sts:AssumeRole and exports
+# temporary credentials so all subsequent AWS calls (CLI + Terraform) use that
+# role. If empty, exports empty strings and IRSA from the pod handles auth.
+
+ASSUME_ROLE_ARN=$(grep "^assume_role_arn:" "${VALUES:-/dev/null}" 2>/dev/null \
+  | sed 's/^[^:]*: *//;s/^"//;s/"$//' | head -1)
+
+if [ -n "$ASSUME_ROLE_ARN" ]; then
+  echo "Assuming role: $ASSUME_ROLE_ARN"
+  ASSUMED_CREDS=$(aws sts assume-role \
+    --role-arn     "$ASSUME_ROLE_ARN" \
+    --role-session-name "np-s3-${SERVICE_ID:-workflow}" \
+    --output json)
+  export AWS_ACCESS_KEY_ID=$(echo "$ASSUMED_CREDS"     | jq -r '.Credentials.AccessKeyId')
+  export AWS_SECRET_ACCESS_KEY=$(echo "$ASSUMED_CREDS" | jq -r '.Credentials.SecretAccessKey')
+  export AWS_SESSION_TOKEN=$(echo "$ASSUMED_CREDS"     | jq -r '.Credentials.SessionToken')
+  echo "Role assumed successfully."
+else
+  echo "No assume_role_arn configured, using pod credentials (IRSA)."
+  export AWS_ACCESS_KEY_ID=""
+  export AWS_SECRET_ACCESS_KEY=""
+  export AWS_SESSION_TOKEN=""
+fi

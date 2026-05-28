@@ -71,6 +71,9 @@ if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
   export AWS_PROFILE="${AWS_PROFILE_VAL}"
 fi
 
+# shellcheck source=assume_role
+. "$(dirname "${BASH_SOURCE[0]}")/assume_role"
+
 # --- Resolve AWS region from nullplatform provider --------------------------
 # We derive the account NRN from the service NRN by stripping everything from
 # :namespace= onward, then query the provider with stored_keys: [account.region].

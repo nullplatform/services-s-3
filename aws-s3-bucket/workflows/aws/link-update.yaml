@@ -34,6 +34,12 @@ steps:
         type: environment
       - name: TOFU_VARIABLES
         type: environment
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
 
   - name: tofu
     type: script

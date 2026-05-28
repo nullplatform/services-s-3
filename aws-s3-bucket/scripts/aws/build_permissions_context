@@ -36,6 +36,9 @@ if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
   export AWS_PROFILE="${AWS_PROFILE_VAL}"
 fi
 
+# shellcheck source=assume_role
+. "$(dirname "${BASH_SOURCE[0]}")/assume_role"
+
 # --- Read service outputs (set by write_service_outputs after bucket creation) -
 
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')

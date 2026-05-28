@@ -10,3 +10,9 @@
 # will export it so Terraform and AWS CLI use the correct credentials.
 # Run "aws sso login --profile <name>" before starting np-agent locally.
 aws_profile: ""
+
+# IAM role ARN to assume before running any AWS operation.
+# When set, the agent's base credentials (e.g. IRSA) are used only to call
+# sts:AssumeRole; all subsequent AWS calls (CLI + Terraform) run as this role.
+# Leave empty to use the agent's assigned credentials directly (e.g. IRSA).
+assume_role_arn: ""
