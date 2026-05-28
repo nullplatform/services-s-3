@@ -23,9 +23,9 @@ The service lives under [`aws-s3-bucket/`](./aws-s3-bucket) to keep the repo ope
 │   ├── permissions/                # OpenTofu module: IAM user + access key + scoped policy (per link)
 │   ├── requirements/               # OpenTofu module: IAM policies the agent role needs
 │   ├── workflows/aws/              # Workflow YAMLs (create/update/delete/link/link-update/unlink)
-│   ├── scripts/aws/                # build_context, do_tofu, write_service_outputs, write_link_outputs, delete_tfstate_bucket
+│   ├── scripts/aws/                # build_context, do_tofu, write_service_outputs, write_link_outputs, delete_tfstate_bucket, assume_role
 │   ├── entrypoint/                 # entrypoint/service/link (agent entrypoint)
-│   └── values.yaml                 # Static config (aws_profile for local dev)
+│   └── values.yaml                 # Static config (aws_profile, assume_role_arn)
 └── README.md
 ```
 
@@ -77,6 +77,49 @@ Only credentials are exposed at the link level — bucket identity (name / ARN /
 | `link` | Application linked | Creates IAM user + access key scoped to the bucket and access level |
 | `link-update` | Link updated | In-place update of the IAM user policy (access_level or path_prefix changes). Credentials are preserved. |
 | `unlink` | Application unlinked | Destroys the IAM user and access key |
+
+## Agent AWS Authentication
+
+The agent authenticates to AWS using one of two mechanisms, configured via `values.yaml`:
+
+### IRSA (default)
+
+Leave `assume_role_arn` empty. The agent pod's IRSA role is used directly for all AWS calls (CLI + Terraform). This is the right choice when the IRSA role already has the required S3 and IAM permissions in the target account.
+
+```yaml
+# values.yaml
+assume_role_arn: ""
+```
+
+### Dynamic assume role
+
+Set `assume_role_arn` to an IAM role ARN. The agent calls `sts:AssumeRole` using its IRSA identity, then uses the resulting temporary credentials for all subsequent AWS calls in the workflow. This is useful when:
+
+- The S3 bucket lives in a **different AWS account** than the agent (cross-account)
+- You want a **dedicated role per service type** (e.g. `np-s3-creator-role`) rather than granting all permissions to the agent's base role
+
+```yaml
+# values.yaml
+assume_role_arn: "arn:aws:iam::123456789012:role/np-s3-creator-role"
+```
+
+The target role must have a trust policy that allows the agent's IRSA role to assume it:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": "arn:aws:iam::<AGENT_ACCOUNT>:role/<IRSA_ROLE_NAME>"
+  },
+  "Action": "sts:AssumeRole"
+}
+```
+
+The target role needs the same IAM permissions as listed in the [AWS IAM permissions](#aws-iam-permissions-for-the-agent-role) section below.
+
+If `assume_role_arn` is set but the assume role call fails (wrong ARN, missing trust policy, insufficient permissions), the workflow **aborts immediately** — it does not fall back to the IRSA credentials.
+
+> **Note for overrides:** `values.yaml` can be overridden per-deployment via the `--overrides-path` mechanism. Set `assume_role_arn` in the overrides `values.yaml` to scope it to a specific customer or environment without modifying the base service definition.
 
 ## Requirements
 
