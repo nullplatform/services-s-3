@@ -36,6 +36,12 @@ if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
   export AWS_PROFILE="${AWS_PROFILE_VAL}"
 fi
 
+# Unset any credentials inherited from build_context so assume_role uses the
+# pod's IRSA identity instead of trying to re-assume an already-assumed role.
+unset AWS_ACCESS_KEY_ID
+unset AWS_SECRET_ACCESS_KEY
+unset AWS_SESSION_TOKEN
+
 # shellcheck source=assume_role
 . "$(dirname "${BASH_SOURCE[0]}")/assume_role"
 
