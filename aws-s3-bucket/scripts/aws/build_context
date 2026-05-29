@@ -9,28 +9,6 @@ set -euo pipefail
 # build_permissions_context in the next workflow step.
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Ensure aws CLI is available. Download and cache if not pre-installed.
-# ---------------------------------------------------------------------------
-if ! command -v aws &>/dev/null; then
-  AWS_CLI_BIN_DIR="/tmp/np-aws-bin"
-  AWS_CLI_BIN="${AWS_CLI_BIN_DIR}/aws"
-
-  if [ ! -f "${AWS_CLI_BIN}" ]; then
-    echo "aws CLI not found, installing to ${AWS_CLI_BIN_DIR}..."
-    mkdir -p "${AWS_CLI_BIN_DIR}"
-    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-    unzip -qo /tmp/awscliv2.zip -d /tmp/awscliv2
-    /tmp/awscliv2/aws/install --install-dir "${AWS_CLI_BIN_DIR}/dist" --bin-dir "${AWS_CLI_BIN_DIR}" --update
-    rm -rf /tmp/awscliv2.zip /tmp/awscliv2
-    echo "aws CLI installed: $("${AWS_CLI_BIN}" --version)"
-  else
-    echo "Using cached aws CLI at ${AWS_CLI_BIN}"
-  fi
-
-  export PATH="${AWS_CLI_BIN_DIR}:${PATH}"
-fi
-
 # --- Parse service context --------------------------------------------------
 
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
