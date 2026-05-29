@@ -1,22 +1,47 @@
 ################################################################################
-# Policy attachments (only when role_name is provided)
+# IAM role (only when create_role = true)
 ################################################################################
 
+resource "aws_iam_role" "nullplatform_s3_role" {
+  count = var.create_role ? 1 : 0
+  name  = "nullplatform_${var.name}_s3_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { AWS = var.trusted_arns }
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+################################################################################
+# Policy attachments (when create_role = true or role_name is provided)
+################################################################################
+
+locals {
+  effective_role_name = var.create_role ? aws_iam_role.nullplatform_s3_role[0].name : var.role_name
+  attach_policies     = var.create_role || var.role_name != null
+}
+
 resource "aws_iam_role_policy_attachment" "s3" {
-  count      = var.role_name != null ? 1 : 0
-  role       = var.role_name
+  count      = local.attach_policies ? 1 : 0
+  role       = local.effective_role_name
   policy_arn = aws_iam_policy.nullplatform_s3_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "s3_iam" {
-  count      = var.role_name != null ? 1 : 0
-  role       = var.role_name
+  count      = local.attach_policies ? 1 : 0
+  role       = local.effective_role_name
   policy_arn = aws_iam_policy.nullplatform_s3_iam_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "s3_tfstate" {
-  count      = var.role_name != null ? 1 : 0
-  role       = var.role_name
+  count      = local.attach_policies ? 1 : 0
+  role       = local.effective_role_name
   policy_arn = aws_iam_policy.nullplatform_s3_tfstate_policy.arn
 }
 
