@@ -77,7 +77,7 @@ resource "aws_iam_policy" "nullplatform_s3_policy" {
           "s3:GetBucketLogging",
           "s3:GetBucketNotification",
           "s3:GetBucketObjectLockConfiguration",
-          "s3:GetBucketReplication",
+          "s3:GetReplicationConfiguration",
           "s3:GetBucketRequestPayment",
           "s3:GetBucketWebsite",
           "s3:GetBucketCORS",
