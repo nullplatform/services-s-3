@@ -81,7 +81,7 @@ fi
 ACCOUNT_NRN=$(echo "$CONTEXT" | jq -r '.service.nrn // .entity_nrn // ""' | sed 's/:namespace=.*$//')
 
 if [ -z "$ACCOUNT_NRN" ]; then
-  echo "ERROR: could not derive account NRN from .service.nrn in context" >&2
+  echo "ERROR: could not derive account NRN from .service.nrn in context"
   exit 1
 fi
 
@@ -93,7 +93,8 @@ ACCOUNT_PROVIDER_ID=$(echo "$NP_PROVIDERS" \
   | jq -r '[(.results // [])[] | select((.data_source.stored_keys // []) | contains(["account.region"]))] | first | .id // ""')
 
 if [ -z "$ACCOUNT_PROVIDER_ID" ] || [ "$ACCOUNT_PROVIDER_ID" = "null" ]; then
-  echo "ERROR: no account provider with account.region found for ${ACCOUNT_NRN}" >&2
+  echo "ERROR: no account provider with account.region found for ${ACCOUNT_NRN}"
+  echo "DEBUG providers response: ${NP_PROVIDERS}"
   exit 1
 fi
 
@@ -101,7 +102,7 @@ ACCOUNT_PROVIDER_DATA=$(np provider read --id "$ACCOUNT_PROVIDER_ID" --format js
 REGION=$(echo "$ACCOUNT_PROVIDER_DATA" | jq -r '.attributes.account.region // ""')
 
 if [ -z "$REGION" ]; then
-  echo "ERROR: account.region not found in provider ${ACCOUNT_PROVIDER_ID}" >&2
+  echo "ERROR: account.region not found in provider ${ACCOUNT_PROVIDER_ID}"
   exit 1
 fi
 
@@ -145,13 +146,11 @@ export TOFU_VARIABLES="-var=service_id=${SERVICE_ID} -var=region=${REGION} -var=
 # --- Extract link context (link workflows only) -----------------------------
 # These are consumed by build_permissions_context in the next workflow step.
 
-if [ "${ACTION_SOURCE:-}" = "link" ]; then
-  export LINK_ID=$(echo "$CONTEXT"   | jq -r '.link.id       // ""')
-  export LINK_NAME=$(echo "$CONTEXT" | jq -r '.link.name     // ""')
-  export SCOPE_ID=$(echo "$CONTEXT"  | jq -r '.link.scope.id // ""')
-  export SCOPE_NRN=$(echo "$CONTEXT" | jq -r '.link.scope.nrn // ""')
+export LINK_ID=$(echo "$CONTEXT"   | jq -r '.link.id       // ""')
+export LINK_NAME=$(echo "$CONTEXT" | jq -r '.link.name     // ""')
+export SCOPE_ID=$(echo "$CONTEXT"  | jq -r '.link.scope.id // ""')
+export SCOPE_NRN=$(echo "$CONTEXT" | jq -r '.link.scope.nrn // ""')
 
-  LINK_ATTRS=$(echo "$CONTEXT" | jq -r '(.link.attributes // {}) * (.parameters // {})')
-  export LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
-  export LINK_PATH_PREFIX=$(echo "$LINK_ATTRS"  | jq -r '.path_prefix  // ""')
-fi
+LINK_ATTRS=$(echo "$CONTEXT" | jq -r '(.link.attributes // {}) * (.parameters // {})')
+export LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
+export LINK_PATH_PREFIX=$(echo "$LINK_ATTRS"  | jq -r '.path_prefix  // ""')
