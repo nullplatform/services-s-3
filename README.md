@@ -119,7 +119,11 @@ The target role needs the same IAM permissions as listed in the [AWS IAM permiss
 
 If `assume_role_arn` is set but the assume role call fails (wrong ARN, missing trust policy, insufficient permissions), the workflow **aborts immediately** — it does not fall back to the IRSA credentials.
 
-> **Note for overrides:** `values.yaml` can be overridden per-deployment via the `--overrides-path` mechanism. Set `assume_role_arn` in the overrides `values.yaml` to scope it to a specific customer or environment without modifying the base service definition.
+#### Credential isolation before assume role
+
+Link actions (`link` / `link-update` / `unlink`) run `build_permissions_context`, which **unsets any AWS credentials inherited from earlier steps** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) before sourcing `assume_role`. This is deliberate: without it, `sts:AssumeRole` would be called using *already-assumed* temporary credentials instead of the pod's IRSA identity, which fails as a self-assume (the assumed role is usually not trusted to assume itself). Clearing the environment first guarantees the assume-role call always starts from the IRSA identity, whether or not a previous step had already assumed the role.
+
+> **Note for overrides:** `values.yaml` ships with `assume_role_arn` empty so the published service stays account-agnostic. Provide the account-specific ARN per deployment via the `--overrides-path` mechanism — set `assume_role_arn` in the overrides `values.yaml` to scope it to a specific customer or environment without modifying the base service definition.
 
 ## Requirements
 
@@ -129,11 +133,15 @@ If `assume_role_arn` is set but the assume role call fails (wrong ARN, missing t
 
 ### AWS IAM permissions (for the agent role)
 
-The agent executing this service needs the IAM policies defined in [`aws-s3-bucket/requirements/main.tf`](./aws-s3-bucket/requirements/main.tf):
+The agent executing this service (its IRSA role, or the `assume_role_arn` target) needs the three IAM policies defined in [`aws-s3-bucket/requirements/main.tf`](./aws-s3-bucket/requirements/main.tf). The `requirements/` module can also create the role itself (`create_role = true`) with a trust policy for `trusted_arns`.
 
-- S3 bucket management (`s3:CreateBucket`, `s3:PutBucketVersioning`, etc.) over `*`
-- IAM user management (`iam:CreateUser`, `iam:CreateAccessKey`, `iam:PutUserPolicy`, etc.) over `arn:aws:iam::*:user/np-s3-*` (or `*` for simpler scope)
-- S3 tfstate management over `arn:aws:s3:::np-service-*`
+| Policy | Purpose | Resource scope |
+|---|---|---|
+| `nullplatform_<name>_s3_policy` | Create / configure / delete the user-facing S3 buckets | `*` |
+| `nullplatform_<name>_s3_iam_policy` | Manage the per-link IAM users + access keys | `arn:aws:iam::*:user/np-s3-*` |
+| `nullplatform_<name>_s3_tfstate_policy` | Manage the per-service OpenTofu state buckets | `arn:aws:s3:::np-service-*` (+ `/*`) |
+
+**Why so many `s3:Get*` read actions?** The AWS Terraform provider refreshes the *full* configuration of every managed bucket on each `plan`/`apply` (versioning, encryption, replication, public-access block, ACL, ownership, logging, lifecycle, CORS, website, etc.). Each of those reads maps to a distinct IAM action — e.g. `s3:GetEncryptionConfiguration`, `s3:GetReplicationConfiguration`, `s3:GetBucketPublicAccessBlock`. Missing any one of them makes the provider fail the refresh even when the bucket itself is fine, so the bucket-management policy grants the complete read set alongside the `Create`/`Put`/`Delete` actions.
 
 ### Runtime dependencies
 
