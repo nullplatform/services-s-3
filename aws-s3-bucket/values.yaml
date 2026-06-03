@@ -15,4 +15,8 @@ aws_profile: ""
 # When set, the agent's base credentials (e.g. IRSA) are used only to call
 # sts:AssumeRole; all subsequent AWS calls (CLI + Terraform) run as this role.
 # Leave empty to use the agent's assigned credentials directly (e.g. IRSA).
-assume_role_arn: "arn:aws:iam::235494813897:role/nullplatform_aws-services-cluster_s3_role"
+#
+# Account-specific, so no real ARN is committed here. Provide it per installation
+# via the --overrides-path values.yaml, e.g.:
+#   assume_role_arn: "arn:aws:iam::<account-id>:role/<role-name>"
+assume_role_arn: ""

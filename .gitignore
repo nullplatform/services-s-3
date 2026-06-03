@@ -132,3 +132,12 @@ dist
 # Intellij
 
 .idea
+
+# Local nullplatform API credentials — never commit
+np-api-skill.*
+*.key
+*.token
+*.pem
+
+# Claude Code local config
+.claude/
