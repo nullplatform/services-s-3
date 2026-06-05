@@ -41,6 +41,15 @@ fi
 unset AWS_ACCESS_KEY_ID
 unset AWS_SECRET_ACCESS_KEY
 unset AWS_SESSION_TOKEN
+unset ASSUME_ROLE_ARN
+
+# Resolve the assume-role ARN from the "AWS IAM" provider. This service operates
+# on S3 resources in the bucket's account, so it uses the same selector as the
+# service actions (service slug, override via assume_role_selector in values.yaml).
+ACCOUNT_NRN=$(echo "$CONTEXT" | jq -r '.service.nrn // .entity_nrn // ""' | sed 's/:namespace=.*$//')
+SERVICE_SLUG=$(echo "$CONTEXT" | jq -r '.service.slug // ""')
+export ASSUME_ROLE_NRN="$ACCOUNT_NRN"
+export ASSUME_ROLE_SELECTOR=$(yaml_value "assume_role_selector" "$SERVICE_SLUG" "$VALUES")
 
 # shellcheck source=assume_role
 . "$(dirname "${BASH_SOURCE[0]}")/assume_role"
