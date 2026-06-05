@@ -1,0 +1,73 @@
+#!/bin/bash
+# Tests for provider_arn_for_selector — the np list->read orchestration.
+# Uses a fake `np` on PATH as a test double for the external CLI (the only
+# way to exercise the orchestration without a live nullplatform connection).
+# Run: bash scripts/aws/test/assume_role_provider_test
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../assume_role_lib
+. "$HERE/../assume_role_lib"
+
+fail=0
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "PASS: $desc"
+  else
+    echo "FAIL: $desc"
+    echo "  expected: [$expected]"
+    echo "  actual:   [$actual]"
+    fail=1
+  fi
+}
+
+# --- Fake np on PATH --------------------------------------------------------
+FAKE_DIR=$(mktemp -d)
+cat > "$FAKE_DIR/np" <<'EOF'
+#!/bin/bash
+args="$*"
+case "$args" in
+  *"provider list"*)
+    if [ "${FAKE_NP_MODE:-}" = "no_provider" ]; then
+      echo '{"results":[]}'
+    else
+      echo '{"results":[{"id":"prov-123"}]}'
+    fi
+    ;;
+  *"provider read"*)
+    echo '{"attributes":{"iam_role_arns":{"arns":[{"selector":"aws-s3-bucket","arn":"arn:aws:iam::123456789012:role/test-s3-role"}]}}}'
+    ;;
+  *) echo '{}' ;;
+esac
+EOF
+chmod +x "$FAKE_DIR/np"
+export PATH="$FAKE_DIR:$PATH"
+
+ARN_S3="arn:aws:iam::123456789012:role/test-s3-role"
+
+assert_eq "resolves arn for matching selector" "$ARN_S3" \
+  "$(provider_arn_for_selector "organization=1:account=2" aws-s3-bucket)"
+
+export FAKE_NP_MODE=no_provider
+assert_eq "no provider instance returns empty" "" \
+  "$(provider_arn_for_selector "organization=1:account=2" aws-s3-bucket)"
+unset FAKE_NP_MODE
+
+assert_eq "selector not in provider returns empty" "" \
+  "$(provider_arn_for_selector "organization=1:account=2" does-not-exist)"
+
+assert_eq "empty nrn returns empty" "" \
+  "$(provider_arn_for_selector "" aws-s3-bucket)"
+
+assert_eq "empty selector returns empty" "" \
+  "$(provider_arn_for_selector "organization=1:account=2" "")"
+
+rm -rf "$FAKE_DIR"
+
+if [ "$fail" -eq 0 ]; then
+  echo "--- all assertions passed ---"
+else
+  echo "--- failures present ---"
+fi
+exit $fail

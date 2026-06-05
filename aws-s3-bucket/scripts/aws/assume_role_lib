@@ -1,0 +1,42 @@
+#!/bin/bash
+# Sourceable library of PURE helpers for assume-role resolution.
+# Defines functions only — NO side effects on source, so it can be unit-tested
+# (see scripts/aws/test/assume_role_lib_test) and reused by assume_role.
+
+# arn_for_selector_from_json <provider_read_json> <selector>
+# Given the JSON returned by `np provider read --id <id> --format json` and a
+# selector string, echoes the matching IAM role ARN, or empty string if there
+# is no match / the input is missing or malformed. First match wins.
+arn_for_selector_from_json() {
+  local json="$1" selector="$2"
+  [ -n "$json" ] || return 0
+  [ -n "$selector" ] || return 0
+  printf '%s' "$json" | jq -r --arg sel "$selector" '
+    [ .attributes.iam_role_arns.arns[]?
+      | select(.selector == $sel)
+      | .arn ]
+    | first // ""' 2>/dev/null
+}
+
+# provider_arn_for_selector <nrn> <selector>
+# Looks up the "AWS IAM" provider (specification aws-iam-configuration, category
+# "Identity & Access Control") at <nrn>, reads it, and echoes the ARN matching
+# <selector>. Empty string if no provider / no match. Requires np + jq.
+# NOTE: `np provider list` does NOT return deep attributes, so we list to get the
+# provider id and then `np provider read --id` to obtain the arns (same two-step
+# pattern used for account.region resolution in build_context).
+provider_arn_for_selector() {
+  local nrn="$1" selector="$2"
+  [ -n "$nrn" ] || return 0
+  [ -n "$selector" ] || return 0
+
+  local pid data
+  pid=$(np provider list --nrn "$nrn" \
+          --specification_slug aws-iam-configuration \
+          --format json --limit 100 2>/dev/null \
+        | jq -r '[ (.results // [])[] ] | first | .id // ""' 2>/dev/null)
+  [ -n "$pid" ] && [ "$pid" != "null" ] || return 0
+
+  data=$(np provider read --id "$pid" --format json 2>/dev/null)
+  arn_for_selector_from_json "$data" "$selector"
+}

@@ -1,0 +1,44 @@
+#!/bin/bash
+# Unit tests for the pure resolution functions in assume_role_lib.
+# No AWS / np calls — only the jq/selector logic that carries the real risk.
+# Run: bash scripts/aws/test/assume_role_lib_test
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../assume_role_lib
+. "$HERE/../assume_role_lib"
+
+fail=0
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "PASS: $desc"
+  else
+    echo "FAIL: $desc"
+    echo "  expected: [$expected]"
+    echo "  actual:   [$actual]"
+    fail=1
+  fi
+}
+
+# A provider read payload as returned by `np provider read --id <id> --format json`.
+JSON='{"attributes":{"iam_role_arns":{"arns":[{"selector":"s3","arn":"arn:aws:iam::111:role/s3"},{"selector":"lambda","arn":"arn:aws:iam::111:role/lambda"}]}}}'
+
+assert_eq "selector s3 returns its arn"       "arn:aws:iam::111:role/s3"     "$(arn_for_selector_from_json "$JSON" s3)"
+assert_eq "selector lambda returns its arn"   "arn:aws:iam::111:role/lambda" "$(arn_for_selector_from_json "$JSON" lambda)"
+assert_eq "unknown selector returns empty"    ""                             "$(arn_for_selector_from_json "$JSON" ecs)"
+assert_eq "missing arns key returns empty"    ""                             "$(arn_for_selector_from_json '{"attributes":{}}' s3)"
+assert_eq "empty input returns empty"         ""                             "$(arn_for_selector_from_json '' s3)"
+assert_eq "malformed json returns empty"      ""                             "$(arn_for_selector_from_json 'not json' s3)"
+assert_eq "empty selector returns empty"      ""                             "$(arn_for_selector_from_json "$JSON" '')"
+
+# First match wins when duplicate selectors exist.
+DUP='{"attributes":{"iam_role_arns":{"arns":[{"selector":"s3","arn":"first"},{"selector":"s3","arn":"second"}]}}}'
+assert_eq "duplicate selector takes first"    "first"                        "$(arn_for_selector_from_json "$DUP" s3)"
+
+if [ "$fail" -eq 0 ]; then
+  echo "--- all assertions passed ---"
+else
+  echo "--- failures present ---"
+fi
+exit $fail
