@@ -82,16 +82,10 @@ if [ -z "$ACCOUNT_NRN" ]; then
   exit 1
 fi
 
-# --- Assume role ------------------------------------------------------------
-# Selector for the "AWS IAM" provider (Identity & Access Control). Defaults to
-# the service slug; override with assume_role_selector in values.yaml if the
-# selector configured in the UI differs from the service slug.
-SERVICE_SLUG=$(echo "$CONTEXT" | jq -r '.service.slug // ""')
-export ASSUME_ROLE_NRN="$ACCOUNT_NRN"
-export ASSUME_ROLE_SELECTOR=$(yaml_value "assume_role_selector" "$SERVICE_SLUG" "$VALUES")
-
-# shellcheck source=assume_role
-. "$(dirname "${BASH_SOURCE[0]}")/assume_role"
+# --- AWS credentials --------------------------------------------------------
+# The role was already assumed by the "assume role" workflow step, which exported
+# AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN. They are inherited here and re-exported
+# in this step's output block, so all AWS CLI + Terraform calls run as that role.
 
 # --- Resolve AWS region from nullplatform provider --------------------------
 # Query the account providers and pick the one exposing account.region.

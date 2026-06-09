@@ -1,4 +1,15 @@
 steps:
+  - name: assume role
+    type: script
+    file: $SERVICE_PATH/scripts/aws/assume_role_step
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+
   - name: build context
     type: script
     file: $SERVICE_PATH/scripts/aws/build_context
