@@ -36,23 +36,13 @@ if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
   export AWS_PROFILE="${AWS_PROFILE_VAL}"
 fi
 
-# Unset any credentials inherited from build_context so assume_role uses the
-# pod's IRSA identity instead of trying to re-assume an already-assumed role.
-unset AWS_ACCESS_KEY_ID
-unset AWS_SECRET_ACCESS_KEY
-unset AWS_SESSION_TOKEN
-unset ASSUME_ROLE_ARN
-
-# Resolve the assume-role ARN from the "AWS IAM" provider. This service operates
-# on S3 resources in the bucket's account, so it uses the same selector as the
-# service actions (service slug, override via assume_role_selector in values.yaml).
-ACCOUNT_NRN=$(echo "$CONTEXT" | jq -r '.service.nrn // .entity_nrn // ""' | sed 's/:namespace=.*$//')
-SERVICE_SLUG=$(echo "$CONTEXT" | jq -r '.service.slug // ""')
-export ASSUME_ROLE_NRN="$ACCOUNT_NRN"
-export ASSUME_ROLE_SELECTOR=$(yaml_value "assume_role_selector" "$SERVICE_SLUG" "$VALUES")
-
-# shellcheck source=assume_role
-. "$(dirname "${BASH_SOURCE[0]}")/assume_role"
+# --- AWS credentials --------------------------------------------------------
+# The role was already assumed by the "assume role" workflow step (the same
+# selector this link flow needs, since it operates on S3 resources in the
+# bucket's account). The temporary credentials are inherited here and
+# re-exported in this step's output block, so the IAM user is created as that
+# role. No re-assume is needed — doing it once up front avoids the self-assume
+# failure that occurred when re-assuming on top of already-assumed credentials.
 
 # --- Read service outputs (set by write_service_outputs after bucket creation) -
 

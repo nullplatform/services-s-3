@@ -1,0 +1,58 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# assume_role_step — FIRST step of every aws workflow.
+#
+# Resolves the IAM role to assume (nullplatform "AWS IAM" provider by selector,
+# or the values.yaml fallback), calls sts:AssumeRole once, and exports temporary
+# AWS credentials. Every subsequent step (build_context,
+# build_permissions_context, do_tofu, ...) inherits and re-exports these, so the
+# whole workflow runs as that role. If no ARN resolves, falls back to the pod's
+# IRSA identity (empty credentials -> default chain).
+#
+# Doing the assume exactly once, up front, avoids the self-assume failure that
+# happened when a second step tried to re-assume on top of already-assumed
+# credentials (see commit 5671ac6).
+#
+# Inputs (from the NP notification context / values):
+#   $CONTEXT  — notification JSON (.service.nrn, .service.slug)
+#   $VALUES   — path to values.yaml (aws_profile, assume_role_selector, ...)
+# Outputs (captured by the workflow YAML as type: environment):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+# ---------------------------------------------------------------------------
+
+# CRITICAL: $VALUES is a FILE PATH (set by np service workflow exec --values),
+# NOT JSON. Read individual keys with yaml_value().
+yaml_value() {
+  local key="$1" default="$2" file="$3"
+  local val
+  val=$(grep "^${key}:" "$file" 2>/dev/null | sed 's/^[^:]*: *//;s/^"//;s/"$//' | head -1)
+  echo "${val:-$default}"
+}
+
+# Named AWS profile for local testing (e.g. an SSO profile). Used only to obtain
+# the base credentials that call sts:AssumeRole; once a role is assumed the
+# AWS_* credentials below take precedence.
+AWS_PROFILE_VAL=$(yaml_value "aws_profile" "" "$VALUES")
+if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
+  export AWS_PROFILE="${AWS_PROFILE_VAL}"
+fi
+
+# Derive the account NRN (strip everything from :namespace= onward) and the
+# service slug; both feed the per-service ARN lookup in the IAM provider.
+ACCOUNT_NRN=$(echo "$CONTEXT" | jq -r '.service.nrn // .entity_nrn // ""' | sed 's/:namespace=.*$//')
+if [ -z "$ACCOUNT_NRN" ]; then
+  echo "ERROR: could not derive account NRN from .service.nrn in context" >&2
+  exit 1
+fi
+SERVICE_SLUG=$(echo "$CONTEXT" | jq -r '.service.slug // ""')
+
+# Selector for the "AWS IAM" provider (Identity & Access Control). Defaults to
+# the service slug; override with assume_role_selector in values.yaml if the
+# selector configured in the UI differs from the service slug.
+export ASSUME_ROLE_NRN="$ACCOUNT_NRN"
+export ASSUME_ROLE_SELECTOR=$(yaml_value "assume_role_selector" "$SERVICE_SLUG" "$VALUES")
+
+# shellcheck source=assume_role
+. "$(dirname "${BASH_SOURCE[0]}")/assume_role"
