@@ -50,7 +50,7 @@ cp -r "$TOFU_MODULE_DIR"/* .
 
 echo "Running: tofu init"
 # shellcheck disable=SC2086
-tofu init $TOFU_INIT_VARIABLES
+tofu init -reconfigure $TOFU_INIT_VARIABLES
 
 echo "Running: tofu $TOFU_ACTION"
 # shellcheck disable=SC2086

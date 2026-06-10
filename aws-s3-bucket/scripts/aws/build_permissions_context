@@ -36,6 +36,14 @@ if [ -n "${AWS_PROFILE_VAL}" ] && [ -z "${AWS_PROFILE:-}" ]; then
   export AWS_PROFILE="${AWS_PROFILE_VAL}"
 fi
 
+# --- AWS credentials --------------------------------------------------------
+# The role was already assumed by the "assume role" workflow step (the same
+# selector this link flow needs, since it operates on S3 resources in the
+# bucket's account). The temporary credentials are inherited here and
+# re-exported in this step's output block, so the IAM user is created as that
+# role. No re-assume is needed — doing it once up front avoids the self-assume
+# failure that occurred when re-assuming on top of already-assumed credentials.
+
 # --- Read service outputs (set by write_service_outputs after bucket creation) -
 
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')

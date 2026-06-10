@@ -10,3 +10,22 @@
 # will export it so Terraform and AWS CLI use the correct credentials.
 # Run "aws sso login --profile <name>" before starting np-agent locally.
 aws_profile: ""
+
+# --- Assume role ------------------------------------------------------------
+# Preferred source: the "AWS IAM" provider (category "Identity & Access Control")
+# declared in nullplatform. The agent looks up that provider at the account NRN
+# and picks the ARN whose `selector` matches assume_role_selector below. This
+# keeps role ARNs declarative and per-service/scope, with no account-specific
+# value committed here.
+#
+# selector to match in the IAM provider's arns list. Leave empty to default to
+# the service slug (.service.slug from the notification context). Set explicitly
+# if the selector configured in the UI differs from the service slug.
+assume_role_selector: "aws-s3-bucket"
+
+# Static fallback used only when the IAM provider yields no ARN for the selector
+# (e.g. local testing without nullplatform, or back-compat single-account setups).
+# When set, the agent's base credentials (e.g. IRSA) are used only to call
+# sts:AssumeRole; all subsequent AWS calls run as this role. Empty -> IRSA direct.
+#   assume_role_arn: "arn:aws:iam::<account-id>:role/<role-name>"
+assume_role_arn: ""

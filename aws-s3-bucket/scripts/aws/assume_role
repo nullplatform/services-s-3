@@ -1,0 +1,51 @@
+#!/bin/bash
+# Sourceable helper — do NOT execute directly.
+# Resolves the IAM role ARN to assume, in this order of precedence:
+#   1. $ASSUME_ROLE_ARN already set in the environment (explicit override).
+#   2. The "AWS IAM" provider (Identity & Access Control) in nullplatform,
+#      matched by $ASSUME_ROLE_SELECTOR at $ASSUME_ROLE_NRN. This is the
+#      declarative, per-service/scope source.
+#   3. assume_role_arn from $VALUES (values.yaml) — local testing / back-compat.
+#   4. None of the above -> empty -> use pod credentials (IRSA) directly.
+#
+# When an ARN is resolved, calls sts:AssumeRole and exports temporary
+# credentials so all subsequent AWS calls (CLI + Terraform) run as that role.
+
+# shellcheck source=assume_role_lib
+. "$(dirname "${BASH_SOURCE[0]}")/assume_role_lib"
+
+ASSUME_ROLE_ARN="${ASSUME_ROLE_ARN:-}"
+
+# 2. nullplatform IAM provider, by selector.
+if [ -z "$ASSUME_ROLE_ARN" ] && [ -n "${ASSUME_ROLE_SELECTOR:-}" ] && [ -n "${ASSUME_ROLE_NRN:-}" ]; then
+  ASSUME_ROLE_ARN=$(provider_arn_for_selector "$ASSUME_ROLE_NRN" "$ASSUME_ROLE_SELECTOR")
+  if [ -n "$ASSUME_ROLE_ARN" ]; then
+    echo "Resolved assume_role_arn from provider (selector=${ASSUME_ROLE_SELECTOR}): ${ASSUME_ROLE_ARN}"
+  else
+    echo "No ARN for selector '${ASSUME_ROLE_SELECTOR}' in IAM provider at ${ASSUME_ROLE_NRN}; trying values.yaml."
+  fi
+fi
+
+# 3. Static values.yaml fallback.
+if [ -z "$ASSUME_ROLE_ARN" ]; then
+  ASSUME_ROLE_ARN=$(grep "^assume_role_arn:" "${VALUES:-/dev/null}" 2>/dev/null \
+    | sed 's/^[^:]*: *//;s/^"//;s/"$//' | head -1)
+fi
+
+# 4. Assume the role, or fall back to IRSA.
+if [ -n "$ASSUME_ROLE_ARN" ]; then
+  echo "Assuming role: $ASSUME_ROLE_ARN"
+  ASSUMED_CREDS=$(aws sts assume-role \
+    --role-arn     "$ASSUME_ROLE_ARN" \
+    --role-session-name "np-s3-${SERVICE_ID:-workflow}" \
+    --output json)
+  export AWS_ACCESS_KEY_ID=$(echo "$ASSUMED_CREDS"     | jq -r '.Credentials.AccessKeyId')
+  export AWS_SECRET_ACCESS_KEY=$(echo "$ASSUMED_CREDS" | jq -r '.Credentials.SecretAccessKey')
+  export AWS_SESSION_TOKEN=$(echo "$ASSUMED_CREDS"     | jq -r '.Credentials.SessionToken')
+  echo "Role assumed successfully."
+else
+  echo "No assume role ARN resolved, using pod credentials (IRSA)."
+  export AWS_ACCESS_KEY_ID=""
+  export AWS_SECRET_ACCESS_KEY=""
+  export AWS_SESSION_TOKEN=""
+fi
