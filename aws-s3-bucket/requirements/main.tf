@@ -25,6 +25,22 @@ resource "aws_iam_role_policy_attachment" "s3_tfstate" {
 ################################################################################
 
 # Permissions to create/configure/delete user buckets managed by this service.
+#
+# Uses `s3:*` rather than an enumerated Get/Put list because the AWS
+# Terraform provider refreshes `aws_s3_bucket` by reading a wide surface of
+# bucket attributes (ACL, CORS, Logging, Lifecycle, Replication,
+# OwnershipControls, Website, Notification, AccelerateConfiguration,
+# RequestPayment, ObjectLock, ...). Each time the provider gains a new
+# refreshed attribute, an enumerated list breaks with AccessDenied on the
+# missing Get* action. Observed on provider v6.x: `s3:GetBucketAcl` was not
+# in the previous enumerated list and aborted the first create workflow on
+# a tenant with an up-to-date provider.
+#
+# Resource stays `"*"` to preserve current behavior. Tenants wanting a
+# tighter blast radius can attach this policy via a wrapper that overrides
+# the Resource list to a known bucket prefix (this service's default naming
+# is `np-<sanitized-service-name>-<suffix>` for user buckets and
+# `np-service-<SERVICE_ID>` for tfstate buckets — both `np-*`).
 resource "aws_iam_policy" "nullplatform_s3_policy" {
   name        = "nullplatform_${var.name}_s3_policy"
   description = "Policy for managing S3 buckets provisioned by the aws-s3-bucket service"
@@ -34,30 +50,7 @@ resource "aws_iam_policy" "nullplatform_s3_policy" {
     "Statement" : [
       {
         "Effect" : "Allow",
-        "Action" : [
-          "s3:CreateBucket",
-          "s3:DeleteBucket",
-          "s3:GetBucketLocation",
-          "s3:GetBucketVersioning",
-          "s3:GetBucketEncryption",
-          "s3:GetBucketPublicAccessBlock",
-          "s3:GetBucketPolicy",
-          "s3:GetBucketTagging",
-          "s3:PutBucketVersioning",
-          "s3:PutBucketEncryption",
-          "s3:PutBucketPublicAccessBlock",
-          "s3:PutBucketPolicy",
-          "s3:PutBucketTagging",
-          "s3:DeleteBucketPolicy",
-          "s3:HeadBucket",
-          "s3:ListBucket",
-          "s3:ListBucketVersions",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:DeleteObjectVersion",
-          "s3:ListAllMyBuckets"
-        ],
+        "Action" : "s3:*",
         "Resource" : "*"
       }
     ]
