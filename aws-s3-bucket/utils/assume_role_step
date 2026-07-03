@@ -6,10 +6,16 @@
 # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN as
 # output:environment so the engine propagates them downstream.
 #
-# Services do NOT receive CONTEXT.providers[...] like scopes, so the role is
-# resolved by querying the AWS IAM provider with `np` at the account NRN
-# (see resolve_assume_role_arn in assume_role_lib). Precedence:
-#   $S3_ASSUME_ROLE_ARN -> IAM provider by selector -> $S3_ASSUME_ROLE_ARN_DEFAULT -> IRSA
+# Unlike the k8s flow — where the platform pre-resolves the IAM provider into
+# CONTEXT.providers["identity-access-control"] using the scope's dimensions —
+# services don't get the IAM provider in the payload. We fetch it ourselves via
+# `np provider list --categories identity-access-control`, passing --nrn and
+# (when present) --dimensions so the platform does the same dimension-aware
+# resolution it would do for a k8s scope.
+#
+# ARN resolution precedence (see resolve_assume_role_arn in assume_role_lib):
+#   $S3_ASSUME_ROLE_ARN -> IAM provider by selector "s3"
+#     -> $S3_ASSUME_ROLE_ARN_DEFAULT -> agent credentials
 #
 # Requires: aws CLI, jq, np. Expects: CONTEXT (engine-injected), SERVICE_PATH,
 #           SERVICE_ID (optional, session name).
@@ -17,25 +23,44 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/assume_role_lib"
 
-# Account NRN from CONTEXT (service / scope / generic event), stripping the
-# :namespace= segment and everything after it — the IAM provider is account-level.
+# NRN of the service from CONTEXT (falls back to scope / generic event).
 NRN=$(echo "${CONTEXT:-}" | jq -r '.service.nrn // .scope.nrn // .entity_nrn // ""' 2>/dev/null)
-ACCOUNT_NRN=$(echo "$NRN" | sed 's/:namespace=.*$//')
+
+# Dimensions (if any) as key:value,key:value — lets the platform resolve the
+# most-specific IAM config the same way it does for scopes. Omitted when absent.
+DIMENSIONS=$(echo "${CONTEXT:-}" | jq -r '
+  if (.dimensions | type) == "object" and ((.dimensions | length) > 0)
+  then [ .dimensions | to_entries[] | "\(.key):\(.value)" ] | join(",")
+  else empty end' 2>/dev/null)
+
 S3_ASSUME_ROLE_SELECTOR="${S3_ASSUME_ROLE_SELECTOR:-s3}"
 
-S3_ASSUME_ROLE_ARN=$(resolve_assume_role_arn "$ACCOUNT_NRN" "$S3_ASSUME_ROLE_SELECTOR")
-export S3_ASSUME_ROLE_ARN
+# `np provider list` does not return deep attributes for every shape, but with a
+# single IAM provider per NRN the results carry .attributes; read the first.
+IAM_ATTRIBUTES=$(np provider list \
+  --nrn "$NRN" \
+  --categories identity-access-control \
+  ${DIMENSIONS:+--dimensions "$DIMENSIONS"} \
+  --format json --limit 100 2>/dev/null \
+  | jq -c '(.results // [])[0].attributes // {}' 2>/dev/null)
+
+S3_ASSUME_ROLE_ARN_RESOLVED=$(resolve_assume_role_arn \
+  "$IAM_ATTRIBUTES" \
+  "$S3_ASSUME_ROLE_SELECTOR" \
+  "S3_ASSUME_ROLE_ARN" \
+  "S3_ASSUME_ROLE_ARN_DEFAULT")
+export S3_ASSUME_ROLE_ARN_RESOLVED
 
 # utils/assume_role performs sts:AssumeRole and exports AWS_* when an ARN is set,
 # or no-ops (leaving agent credentials in place) when empty. Non-zero only when
 # sts:AssumeRole itself fails.
 if ! source "$SCRIPT_DIR/assume_role"; then
-  echo "   ❌ assume_role step failed: could not assume $S3_ASSUME_ROLE_ARN" >&2
+  echo "   ❌ assume_role step failed: could not assume $S3_ASSUME_ROLE_ARN_RESOLVED" >&2
   echo "" >&2
   echo "💡 Possible causes:" >&2
   echo "   • The agent's role is not allowed to sts:AssumeRole the target role" >&2
   echo "   • The target role does not exist or does not trust the agent role" >&2
-  echo "   • There is no role ARN configured for selector=$S3_ASSUME_ROLE_SELECTOR at $ACCOUNT_NRN" >&2
+  echo "   • No role ARN for selector=$S3_ASSUME_ROLE_SELECTOR in the IAM provider at NRN=$NRN" >&2
   echo "" >&2
   exit 1
 fi

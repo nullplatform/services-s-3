@@ -1,23 +1,23 @@
 #!/bin/bash
 # Sourceable helper — do NOT execute directly.
-# Reads S3_ASSUME_ROLE_ARN from the environment. If set, calls sts:AssumeRole and
-# exports temporary credentials so all subsequent AWS calls (including tofu) use
-# that role. If empty, does nothing — the agent's credentials (pod IRSA) handle
-# auth.
+# Reads S3_ASSUME_ROLE_ARN_RESOLVED from the environment (set by
+# utils/assume_role_step). If set, calls sts:AssumeRole and exports temporary
+# credentials so all subsequent AWS calls (including tofu) use that role. If
+# empty, does nothing — the agent's credentials (pod IRSA) handle auth.
 #
 # Requires: aws CLI, jq.
-# Expects:  S3_ASSUME_ROLE_ARN (set by utils/assume_role_step),
+# Expects:  S3_ASSUME_ROLE_ARN_RESOLVED (set by utils/assume_role_step),
 #           SERVICE_ID (optional, used for the session name).
 
-if [ -n "${S3_ASSUME_ROLE_ARN:-}" ]; then
-  echo "   🔑 Assuming role: $S3_ASSUME_ROLE_ARN"
+if [ -n "${S3_ASSUME_ROLE_ARN_RESOLVED:-}" ]; then
+  echo "   🔑 Assuming role: $S3_ASSUME_ROLE_ARN_RESOLVED"
 
   _ar_sts_error=$(mktemp)
   if ! ASSUMED_CREDS=$(aws sts assume-role \
-    --role-arn "$S3_ASSUME_ROLE_ARN" \
+    --role-arn "$S3_ASSUME_ROLE_ARN_RESOLVED" \
     --role-session-name "np-s3-${SERVICE_ID:-workflow}" \
     --output json 2>"$_ar_sts_error"); then
-    echo "   ❌ sts:AssumeRole failed for $S3_ASSUME_ROLE_ARN" >&2
+    echo "   ❌ sts:AssumeRole failed for $S3_ASSUME_ROLE_ARN_RESOLVED" >&2
     cat "$_ar_sts_error" >&2
     rm -f "$_ar_sts_error"
     return 1
@@ -29,7 +29,7 @@ if [ -n "${S3_ASSUME_ROLE_ARN:-}" ]; then
   _ar_session_token=$(echo "$ASSUMED_CREDS" | jq -r '.Credentials.SessionToken // ""')
 
   if [ -z "$_ar_access_key" ] || [ -z "$_ar_secret_key" ] || [ -z "$_ar_session_token" ]; then
-    echo "   ❌ sts:AssumeRole returned incomplete credentials for $S3_ASSUME_ROLE_ARN" >&2
+    echo "   ❌ sts:AssumeRole returned incomplete credentials for $S3_ASSUME_ROLE_ARN_RESOLVED" >&2
     return 1
   fi
 

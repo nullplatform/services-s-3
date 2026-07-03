@@ -1,62 +1,45 @@
 #!/bin/bash
 # Sourceable library of PURE helpers for assume-role resolution.
-# Defines functions only — NO side effects on source.
+# Makes NO np/aws calls and has no source side effects — fully unit-testable.
 #
-# NOTE: services do NOT receive CONTEXT.providers[...] populated the way scopes
-# do, so (unlike the k8s/static scopes) this resolves the AWS IAM provider by
-# querying the API with `np` at runtime — same model as the lambda scope.
-#
-# Requires (at call time): np + jq.
+# Requires (at call time): jq, bash >= 4 (uses ${!var} indirect expansion).
 
-# arn_for_selector_from_json <provider_read_json> <selector>
-# Given the JSON returned by `np provider read --id <id> --format json` and a
-# selector, echoes the matching IAM role ARN, or "" if no match / malformed.
-arn_for_selector_from_json() {
+# arn_for_selector <iam_attributes_json> <selector>
+# Given the IAM provider attributes (.iam_role_arns.arns[...]), echoes the ARN
+# whose entry matches <selector>, or "" if none. First match wins. Never
+# crashes on empty/malformed input.
+arn_for_selector() {
   local json="$1" selector="$2"
   [ -n "$json" ] || return 0
   [ -n "$selector" ] || return 0
   printf '%s' "$json" | jq -r --arg sel "$selector" '
-    [ .attributes.iam_role_arns.arns[]?
+    [ .iam_role_arns.arns[]?
       | select(.selector == $sel)
       | .arn ]
     | first // ""' 2>/dev/null
 }
 
-# provider_arn_for_selector <nrn> <selector>
-# Looks up the AWS IAM provider (spec aws-iam-configuration) at <nrn>, reads it,
-# and echoes the ARN matching <selector>. Empty if no provider / no match.
-# `np provider list` does NOT return deep attributes, so we list to get the id
-# and then `np provider read --id` for the arns.
-provider_arn_for_selector() {
-  local nrn="$1" selector="$2"
-  [ -n "$nrn" ] || return 0
-  [ -n "$selector" ] || return 0
-
-  local pid data
-  pid=$(np provider list --nrn "$nrn" \
-          --specification_slug aws-iam-configuration \
-          --format json --limit 100 2>/dev/null \
-        | jq -r '[ (.results // [])[] ] | first | .id // ""' 2>/dev/null)
-  [ -n "$pid" ] && [ "$pid" != "null" ] || return 0
-
-  data=$(np provider read --id "$pid" --format json 2>/dev/null)
-  arn_for_selector_from_json "$data" "$selector"
-}
-
-# resolve_assume_role_arn <account_nrn> <selector>
-# Echoes the IAM role ARN to assume ("" = use agent credentials):
-#   1. $S3_ASSUME_ROLE_ARN env var (explicit override)
-#   2. AWS IAM provider (aws-iam-configuration) at <account_nrn> by <selector>
-#   3. $S3_ASSUME_ROLE_ARN_DEFAULT env var (per-account agent default)
+# resolve_assume_role_arn <iam_attributes_json> <selector> <override_env_name> <default_env_name>
+# Echoes the ARN to assume ("" = use agent credentials), in precedence order:
+#   1. ${!override_env_name} — explicit per-run override
+#   2. iam_attributes_json entry matching <selector> (caller pre-resolved the
+#      provider via `np provider list` for the service's NRN + dimensions)
+#   3. ${!default_env_name} — per-account agent default
+# Empty override/default env names are treated as unset (chain continues).
 resolve_assume_role_arn() {
-  local nrn="$1" selector="$2" arn=""
+  local iam_json="$1" selector="$2" override_env="$3" default_env="$4" arn=""
 
-  arn="${S3_ASSUME_ROLE_ARN:-}"
-
-  if [ -z "$arn" ] && [ -n "$nrn" ] && [ -n "$selector" ]; then
-    arn=$(provider_arn_for_selector "$nrn" "$selector")
+  if [ -n "$override_env" ]; then
+    arn="${!override_env:-}"
   fi
 
-  arn="${arn:-${S3_ASSUME_ROLE_ARN_DEFAULT:-}}"
+  if [ -z "$arn" ] && [ -n "$iam_json" ] && [ -n "$selector" ]; then
+    arn=$(arn_for_selector "$iam_json" "$selector")
+  fi
+
+  if [ -z "$arn" ] && [ -n "$default_env" ]; then
+    arn="${!default_env:-}"
+  fi
+
   printf '%s' "$arn"
 }
