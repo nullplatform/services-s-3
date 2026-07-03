@@ -35,13 +35,15 @@ DIMENSIONS=$(echo "${CONTEXT:-}" | jq -r '
 
 S3_ASSUME_ROLE_SELECTOR="${S3_ASSUME_ROLE_SELECTOR:-s3}"
 
-# `np provider list` does not return deep attributes for every shape, but with a
-# single IAM provider per NRN the results carry .attributes; read the first.
+# Resolve the IAM provider for this NRN + dimensions. NOTE: `--limit` is
+# incompatible with `--categories` (np rejects it: "cannot use flag limit when
+# using categories flag"), so it must NOT be passed here. The results carry
+# .attributes; read the first (a single IAM provider per NRN).
 IAM_ATTRIBUTES=$(np provider list \
   --nrn "$NRN" \
   --categories identity-access-control \
   ${DIMENSIONS:+--dimensions "$DIMENSIONS"} \
-  --format json --limit 100 2>/dev/null \
+  --format json 2>/dev/null \
   | jq -c '(.results // [])[0].attributes // {}' 2>/dev/null)
 
 S3_ASSUME_ROLE_ARN_RESOLVED=$(resolve_assume_role_arn \
