@@ -4,28 +4,26 @@
 #
 # Runs FIRST in each AWS-touching workflow. The workflow YAML must declare
 # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN as
-# output:environment so the engine propagates them to the following steps.
+# output:environment so the engine propagates them downstream.
 #
-# The AWS IAM provider (category "identity-access-control") is read from
-# CONTEXT.providers[...], where the platform has ALREADY resolved it for the
-# service's dimensions. Requires "identity-access-control" to be listed in
-# provider_categories (values.yaml and/or the workflow).
+# Services do NOT receive CONTEXT.providers[...] like scopes, so the role is
+# resolved by querying the AWS IAM provider with `np` at the account NRN
+# (see resolve_assume_role_arn in assume_role_lib). Precedence:
+#   $S3_ASSUME_ROLE_ARN -> IAM provider by selector -> $S3_ASSUME_ROLE_ARN_DEFAULT -> IRSA
 #
-# Resolution precedence (see resolve_assume_role_arn in assume_role_lib):
-#   $S3_ASSUME_ROLE_ARN -> IAM provider by selector
-#     -> $S3_ASSUME_ROLE_ARN_DEFAULT -> agent credentials
-#
-# Requires: aws CLI, jq. Expects: CONTEXT (engine-injected), SERVICE_ID (optional).
+# Requires: aws CLI, jq, np. Expects: CONTEXT (engine-injected), SERVICE_PATH,
+#           SERVICE_ID (optional, session name).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/assume_role_lib"
 
+# Account NRN from CONTEXT (service / scope / generic event), stripping the
+# :namespace= segment and everything after it — the IAM provider is account-level.
+NRN=$(echo "${CONTEXT:-}" | jq -r '.service.nrn // .scope.nrn // .entity_nrn // ""' 2>/dev/null)
+ACCOUNT_NRN=$(echo "$NRN" | sed 's/:namespace=.*$//')
 S3_ASSUME_ROLE_SELECTOR="${S3_ASSUME_ROLE_SELECTOR:-s3}"
 
-# IAM provider as resolved for the service's dimensions by the platform.
-IAM_PROVIDER=$(echo "${CONTEXT:-}" | jq -c '.providers["identity-access-control"] // {}' 2>/dev/null)
-
-S3_ASSUME_ROLE_ARN=$(resolve_assume_role_arn "$IAM_PROVIDER" "$S3_ASSUME_ROLE_SELECTOR")
+S3_ASSUME_ROLE_ARN=$(resolve_assume_role_arn "$ACCOUNT_NRN" "$S3_ASSUME_ROLE_SELECTOR")
 export S3_ASSUME_ROLE_ARN
 
 # utils/assume_role performs sts:AssumeRole and exports AWS_* when an ARN is set,
@@ -37,7 +35,7 @@ if ! source "$SCRIPT_DIR/assume_role"; then
   echo "💡 Possible causes:" >&2
   echo "   • The agent's role is not allowed to sts:AssumeRole the target role" >&2
   echo "   • The target role does not exist or does not trust the agent role" >&2
-  echo "   • There is no role ARN configured for selector=$S3_ASSUME_ROLE_SELECTOR" >&2
+  echo "   • There is no role ARN configured for selector=$S3_ASSUME_ROLE_SELECTOR at $ACCOUNT_NRN" >&2
   echo "" >&2
   exit 1
 fi
