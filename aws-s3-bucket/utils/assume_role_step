@@ -1,0 +1,43 @@
+#!/bin/bash
+# Dedicated workflow step: resolve the target IAM role and assume it, exporting
+# temporary credentials so every subsequent step (including tofu) inherits them.
+#
+# Runs FIRST in each AWS-touching workflow. The workflow YAML must declare
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN as
+# output:environment so the engine propagates them to the following steps.
+#
+# The AWS IAM provider (category "identity-access-control") is read from
+# CONTEXT.providers[...], where the platform has ALREADY resolved it for the
+# service's dimensions. Requires "identity-access-control" to be listed in
+# provider_categories (values.yaml and/or the workflow).
+#
+# Resolution precedence (see resolve_assume_role_arn in assume_role_lib):
+#   $S3_ASSUME_ROLE_ARN -> IAM provider by selector
+#     -> $S3_ASSUME_ROLE_ARN_DEFAULT -> agent credentials
+#
+# Requires: aws CLI, jq. Expects: CONTEXT (engine-injected), SERVICE_ID (optional).
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/assume_role_lib"
+
+S3_ASSUME_ROLE_SELECTOR="${S3_ASSUME_ROLE_SELECTOR:-s3}"
+
+# IAM provider as resolved for the service's dimensions by the platform.
+IAM_PROVIDER=$(echo "${CONTEXT:-}" | jq -c '.providers["identity-access-control"] // {}' 2>/dev/null)
+
+S3_ASSUME_ROLE_ARN=$(resolve_assume_role_arn "$IAM_PROVIDER" "$S3_ASSUME_ROLE_SELECTOR")
+export S3_ASSUME_ROLE_ARN
+
+# utils/assume_role performs sts:AssumeRole and exports AWS_* when an ARN is set,
+# or no-ops (leaving agent credentials in place) when empty. Non-zero only when
+# sts:AssumeRole itself fails.
+if ! source "$SCRIPT_DIR/assume_role"; then
+  echo "   ❌ assume_role step failed: could not assume $S3_ASSUME_ROLE_ARN" >&2
+  echo "" >&2
+  echo "💡 Possible causes:" >&2
+  echo "   • The agent's role is not allowed to sts:AssumeRole the target role" >&2
+  echo "   • The target role does not exist or does not trust the agent role" >&2
+  echo "   • There is no role ARN configured for selector=$S3_ASSUME_ROLE_SELECTOR" >&2
+  echo "" >&2
+  exit 1
+fi

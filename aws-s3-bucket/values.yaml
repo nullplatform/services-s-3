@@ -10,3 +10,6 @@
 # will export it so Terraform and AWS CLI use the correct credentials.
 # Run "aws sso login --profile <name>" before starting np-agent locally.
 aws_profile: ""
+
+provider_categories:
+  - identity-access-control

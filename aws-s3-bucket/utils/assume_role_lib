@@ -1,0 +1,46 @@
+#!/bin/bash
+# Sourceable library of PURE helpers for assume-role resolution.
+#
+# Input is the AWS IAM provider exactly as it appears in
+# CONTEXT.providers["identity-access-control"] — the platform already resolved it
+# for the service's dimensions (most-specific config whose dimensions are a
+# subset of the service's wins). These helpers only pick the selector, so they
+# make NO np/aws calls and have no side effects on source — fully unit-testable.
+#
+# Requires (at call time): jq.
+
+# arn_for_selector <iam_provider_attributes_json> <selector>
+# Given CONTEXT.providers["identity-access-control"], echoes the ARN whose entry
+# in .iam_role_arns.arns[] matches <selector>, or "" if none. First match wins.
+# Returns "" on empty/malformed input (never crashes).
+arn_for_selector() {
+  local json="$1" selector="$2"
+  [ -n "$json" ] || return 0
+  [ -n "$selector" ] || return 0
+  printf '%s' "$json" | jq -r --arg sel "$selector" '
+    [ .iam_role_arns.arns[]?
+      | select(.selector == $sel)
+      | .arn ]
+    | first // ""' 2>/dev/null || true
+}
+
+# resolve_assume_role_arn <iam_provider_json> <selector>
+# Echoes the ARN to assume ("" = use agent credentials):
+#   1. $S3_ASSUME_ROLE_ARN env var (explicit override)
+#   2. AWS IAM provider entry matching <selector> (already dimension-resolved
+#      by the platform via CONTEXT.providers["identity-access-control"])
+#   3. $S3_ASSUME_ROLE_ARN_DEFAULT env var (per-account agent default)
+# Note: S3_ASSUME_ROLE_ARN="" (explicitly empty) is treated the same as unset —
+# the chain continues to the next source.
+resolve_assume_role_arn() {
+  local iam_json="$1" selector="$2" arn=""
+
+  arn="${S3_ASSUME_ROLE_ARN:-}"
+
+  if [ -z "$arn" ] && [ -n "$iam_json" ] && [ -n "$selector" ]; then
+    arn=$(arn_for_selector "$iam_json" "$selector")
+  fi
+
+  arn="${arn:-${S3_ASSUME_ROLE_ARN_DEFAULT:-}}"
+  printf '%s' "$arn"
+}
