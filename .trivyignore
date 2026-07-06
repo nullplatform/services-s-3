@@ -1,0 +1,7 @@
+# Trivy misconfiguration suppressions for this repo.
+# Each entry is intentional and documented; revisit if the module changes.
+
+# AVD-AWS-0132 — S3 bucket not encrypted with a customer-managed KMS key.
+# The service provisions buckets with default SSE; customer-managed KMS keys are
+# left to the consumer to layer on when required (flexible by design).
+AVD-AWS-0132

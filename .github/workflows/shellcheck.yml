@@ -1,0 +1,10 @@
+name: shellcheck
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  shellcheck:
+    uses: nullplatform/actions-nullplatform/.github/workflows/shellcheck.yml@main

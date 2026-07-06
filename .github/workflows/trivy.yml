@@ -1,0 +1,14 @@
+name: trivy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy:
+    uses: nullplatform/actions-nullplatform/.github/workflows/trivy-tofu-scan.yml@main
