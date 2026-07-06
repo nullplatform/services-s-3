@@ -44,12 +44,38 @@ resource "aws_iam_policy" "nullplatform_s3" {
   description = "Policy for managing S3 buckets provisioned by the aws-s3-bucket service"
   tags        = local.iam_default_tags
 
+  # Actions are enumerated (not s3:*) to avoid a wildcard action. Resource stays
+  # "*" on purpose so the consuming stack can restrict it (e.g. arn:aws:s3:::np-*)
+  # without changing this module.
   policy = jsonencode({
     "Version" : "2012-10-17",
     "Statement" : [
       {
         "Effect" : "Allow",
-        "Action" : "s3:*",
+        "Action" : [
+          "s3:CreateBucket",
+          "s3:DeleteBucket",
+          "s3:HeadBucket",
+          "s3:GetBucketLocation",
+          "s3:GetBucketVersioning",
+          "s3:GetBucketEncryption",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetBucketPolicy",
+          "s3:GetBucketTagging",
+          "s3:PutBucketVersioning",
+          "s3:PutBucketEncryption",
+          "s3:PutBucketPublicAccessBlock",
+          "s3:PutBucketPolicy",
+          "s3:PutBucketTagging",
+          "s3:DeleteBucketPolicy",
+          "s3:ListBucket",
+          "s3:ListBucketVersions",
+          "s3:ListAllMyBuckets",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion"
+        ],
         "Resource" : "*"
       }
     ]
