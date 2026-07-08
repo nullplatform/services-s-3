@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/nullplatform/services-s-3/compare/v0.1.1...v0.2.0) (2026-07-08)
+
+
+### Features
+
+* assume-role support for the aws-s3-bucket service + requirements module ([#12](https://github.com/nullplatform/services-s-3/issues/12)) ([60cc130](https://github.com/nullplatform/services-s-3/commit/60cc1301e0197ea7f06457c0574afcadeaaf5956))
+
+
+### Bug Fixes
+
+* drop --limit from np provider list (incompatible with --categories) ([#16](https://github.com/nullplatform/services-s-3/issues/16)) ([151d87b](https://github.com/nullplatform/services-s-3/commit/151d87bebc327e7aef38c266126488e2fb2cd2fa))
+* resolve assume-role via np API instead of CONTEXT.providers ([#14](https://github.com/nullplatform/services-s-3/issues/14)) ([038e51c](https://github.com/nullplatform/services-s-3/commit/038e51cbf898cf8c62d39064d47f7a9b856898ea))
+* **s3:** grant s3:Get*/List* so provider refresh reads succeed ([#18](https://github.com/nullplatform/services-s-3/issues/18)) ([b06dac8](https://github.com/nullplatform/services-s-3/commit/b06dac82157e1a415b933b627742defcd69237f1))
+
 ## [0.1.1](https://github.com/nullplatform/services-s-3/compare/v0.1.0...v0.1.1) (2026-04-30)
 
 
