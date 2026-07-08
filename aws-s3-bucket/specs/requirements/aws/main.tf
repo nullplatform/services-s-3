@@ -44,7 +44,11 @@ resource "aws_iam_policy" "nullplatform_s3" {
   description = "Policy for managing S3 buckets provisioned by the aws-s3-bucket service"
   tags        = local.iam_default_tags
 
-  # Actions are enumerated (not s3:*) to avoid a wildcard action. Resource stays
+  # Grouped by verb (not s3:*) to avoid a full wildcard action while still
+  # covering every read the AWS provider (v6+) performs when it refreshes an
+  # aws_s3_bucket — it reads a wide surface (ACL, CORS, Logging, Lifecycle,
+  # Replication, Website, etc.), so enumerating each s3:Get*/List* by hand is
+  # brittle (a missing one surfaces as AccessDenied on refresh). Resource stays
   # "*" on purpose so the consuming stack can restrict it (e.g. arn:aws:s3:::np-*)
   # without changing this module.
   policy = jsonencode({
@@ -53,28 +57,12 @@ resource "aws_iam_policy" "nullplatform_s3" {
       {
         "Effect" : "Allow",
         "Action" : [
+          "s3:Get*",
+          "s3:List*",
+          "s3:Put*",
+          "s3:Delete*",
           "s3:CreateBucket",
-          "s3:DeleteBucket",
-          "s3:HeadBucket",
-          "s3:GetBucketLocation",
-          "s3:GetBucketVersioning",
-          "s3:GetBucketEncryption",
-          "s3:GetBucketPublicAccessBlock",
-          "s3:GetBucketPolicy",
-          "s3:GetBucketTagging",
-          "s3:PutBucketVersioning",
-          "s3:PutBucketEncryption",
-          "s3:PutBucketPublicAccessBlock",
-          "s3:PutBucketPolicy",
-          "s3:PutBucketTagging",
-          "s3:DeleteBucketPolicy",
-          "s3:ListBucket",
-          "s3:ListBucketVersions",
-          "s3:ListAllMyBuckets",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:DeleteObjectVersion"
+          "s3:HeadBucket"
         ],
         "Resource" : "*"
       }
