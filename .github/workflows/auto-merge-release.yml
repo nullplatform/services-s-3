@@ -1,0 +1,12 @@
+name: auto-merge-release-pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+
+jobs:
+  automerge:
+    uses: nullplatform/actions-nullplatform/.github/workflows/auto-merge-release.yml@main
+    secrets:
+      app-id: ${{ secrets.APP_RELEASE_ID }}
+      app-private-key: ${{ secrets.APP_RELEASE_PRIVATE_KEY }}
