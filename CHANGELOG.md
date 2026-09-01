@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/nullplatform/services-s-3/compare/v0.2.0...v0.3.0) (2026-09-01)
+
+
+### Features
+
+* **ci:** build+push the worker image and register its artifact on release ([04fc9f7](https://github.com/nullplatform/services-s-3/commit/04fc9f7140b8dae522a8f8162a763bdbc26d62f3))
+* **ci:** build+push the worker image and register its artifact on release ([e384665](https://github.com/nullplatform/services-s-3/commit/e384665f392db8102211b2d2493d2a718bc5dfa0))
+
 ## [0.2.0](https://github.com/nullplatform/services-s-3/compare/v0.1.1...v0.2.0) (2026-07-28)
 
 
