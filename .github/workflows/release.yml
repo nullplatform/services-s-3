@@ -1,15 +1,39 @@
 name: release
 
+# Full release pipeline in ONE chained run: release-please -> docker
+# build+push to ECR Public -> np artifact registration -> release finalized
+# with the artifact metadata (image, digest, pinned reference, artifact id).
+#
+# Chained on purpose: release-please creates tags with GITHUB_TOKEN, and
+# GitHub never triggers workflows from bot-token events.
+#
+# Recovery / backfill: dispatch with existing_tag to publish + finalize a tag
+# that already exists.
+#
+# Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
+# NP_ARTIFACT_NRN.
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      existing_tag:
+        description: 'Publish + finalize an existing tag (recovery/backfill)'
+        required: true
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
+  id-token: write   # OIDC auth against AWS for the ECR push
 
 jobs:
   release:
-    uses: nullplatform/actions-nullplatform/.github/workflows/release.yml@main
-    secrets: inherit
+    uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@main
+    with:
+      image_name: services/s3
+      existing_tag: ${{ inputs.existing_tag || '' }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
+      artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
