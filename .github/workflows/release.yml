@@ -10,7 +10,7 @@ name: release
 # Recovery / backfill: dispatch with existing_tag to publish + finalize a tag
 # that already exists.
 #
-# Configure: secrets AWS_ROLE_ARN_ECR_PUSH + NULLPLATFORM_API_KEY (both already set), variable
+# Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
 # NP_ARTIFACT_NRN.
 on:
   push:
@@ -36,4 +36,4 @@ jobs:
       existing_tag: ${{ inputs.existing_tag || '' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
-      artifact_np_api_key: ${{ secrets.NULLPLATFORM_API_KEY }}
+      artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
