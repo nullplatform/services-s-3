@@ -5,3 +5,9 @@
 # user is governed by the agent's worker pod securityContext/patches, not by
 # a USER directive here. Revisit when the bridge ships a non-root variant.
 AVD-DS-0002
+
+# AVD-AWS-0132 — pre-existing service design, not introduced by the CI PR:
+# provisioned buckets default to SSE-S3; a customer-managed KMS key is a
+# product option (per-bucket key cost + cross-account key management this
+# service does not own). Flagged for product review.
+AVD-AWS-0132
