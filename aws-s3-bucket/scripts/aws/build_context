@@ -31,11 +31,6 @@ ENCRYPTION=$(echo "$SERVICE_ATTRS"          | jq -r '.encryption          // "AE
 PUBLIC_ACCESS_BLOCK=$(echo "$SERVICE_ATTRS" | jq -r '.public_access_block // true')
 FORCE_DESTROY=$(echo "$SERVICE_ATTRS"       | jq -r '.force_destroy       // false')
 
-if [ -z "$BUCKET_NAME_SUFFIX" ]; then
-  echo "ERROR: bucket_name_suffix is required" >&2
-  exit 1
-fi
-
 # --- Bucket name: compute once, then freeze ---------------------------------
 # CRITICAL: the bucket name must be IMMUTABLE after the first create.
 # aws_s3_bucket.bucket is a ForceNew attribute, so any change triggers
@@ -51,6 +46,10 @@ if [ -n "$EXISTING_BUCKET_NAME" ] && [ "$EXISTING_BUCKET_NAME" != "null" ]; then
   BUCKET_NAME="$EXISTING_BUCKET_NAME"
   echo "Using existing bucket_name from service attributes: ${BUCKET_NAME}"
 else
+  if [ -z "$BUCKET_NAME_SUFFIX" ]; then
+    echo "ERROR: bucket_name_suffix is required" >&2
+    exit 1
+  fi
   BUCKET_NAME=$(echo "${INSTANCE_NAME}-${BUCKET_NAME_SUFFIX}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)
   echo "Computed new bucket_name: ${BUCKET_NAME}"
 fi
