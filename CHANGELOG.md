@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/nullplatform/services-s-3/compare/v0.3.0...v0.3.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* delete workflow shouldn't require bucket_name_suffix ([467321b](https://github.com/nullplatform/services-s-3/commit/467321b9cfe9d9dd4a464b2d5b34e0ebc57e3f92))
+* don't require bucket_name_suffix when bucket_name already exists ([d48a0bf](https://github.com/nullplatform/services-s-3/commit/d48a0bf8047a674a65e24139621200741e9d2a3f))
+
 ## [0.3.0](https://github.com/nullplatform/services-s-3/compare/v0.2.0...v0.3.0) (2026-09-01)
 
 
