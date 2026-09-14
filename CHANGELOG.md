@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/nullplatform/services-s-3/compare/v0.3.1...v0.3.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **deps:** bump OpenTofu to 1.12.6 ([#24](https://github.com/nullplatform/services-s-3/issues/24)) ([bae8881](https://github.com/nullplatform/services-s-3/commit/bae8881c54a8b86e5eadcd687397b5dffd1d5655))
+
 ## [0.3.1](https://github.com/nullplatform/services-s-3/compare/v0.3.0...v0.3.1) (2026-09-03)
 
 
