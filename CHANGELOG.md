@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/nullplatform/services-s-3/compare/v0.3.2...v0.4.0) (2026-09-15)
+
+
+### Features
+
+* dependabot for base image bumps and container image scan ([48a84e6](https://github.com/nullplatform/services-s-3/commit/48a84e66127aa4dc912752fc3699b8d8c3737794))
+* dependabot for base image bumps and container image scan ([9e58a82](https://github.com/nullplatform/services-s-3/commit/9e58a825219e151cfcc272f909c0e56bbd918f05))
+
+
+### Bug Fixes
+
+* grant actions read to the image scan job — the reusable declares it ([71084a0](https://github.com/nullplatform/services-s-3/commit/71084a000aac497edb7c855ca1df26e9b8619807))
+
 ## [0.3.2](https://github.com/nullplatform/services-s-3/compare/v0.3.1...v0.3.2) (2026-09-14)
 
 
