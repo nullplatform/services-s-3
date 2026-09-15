@@ -1,0 +1,12 @@
+# Keeps the base image FROM pinned to the latest published version: when a
+# new tag of the base is released, Dependabot opens a bump PR and this repo's
+# CI (build + image scan) validates it before merge.
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependencies"
+      - "base-image"

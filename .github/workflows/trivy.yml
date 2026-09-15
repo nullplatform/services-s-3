@@ -12,3 +12,16 @@ permissions:
 jobs:
   trivy:
     uses: nullplatform/actions-nullplatform/.github/workflows/trivy-tofu-scan.yml@main
+
+  # Scans the built container image (base layers + this repo's additions) and
+  # publishes the findings to the repository Security tab. Report-only: the
+  # image owner triages there; the build gate stays in the release pipeline.
+  image:
+    permissions:
+      contents: read
+      security-events: write
+    uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@main
+    with:
+      context: .
+      image_name: services-s3
+      exit_code: 0
