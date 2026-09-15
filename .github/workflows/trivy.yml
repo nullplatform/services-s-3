@@ -20,6 +20,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # docker-security-scan declares actions: read in its own permissions
+      # block; a caller granting less fails the run at startup.
+      actions: read
     uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@main
     with:
       context: .
