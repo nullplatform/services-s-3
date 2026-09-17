@@ -7,6 +7,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    # fix(deps): release-please only cuts a release for feat/fix; chore(deps) would leave the bump unpublished.
+    commit-message:
+      prefix: "fix"
+      include: "scope"
     labels:
       - "dependencies"
       - "base-image"
