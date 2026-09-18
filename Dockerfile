@@ -4,7 +4,7 @@
 # worker bridge. The bridge dials over gRPC and runs the bash entrypoint on
 # each package-exec action; this image adds the cloud tooling the S3 steps
 # need and bakes the service in, so the channel needs no cmdline.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.0.0
+FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.1.1
 
 # Tooling the S3 workflows call (the bridge base stays minimal on purpose):
 # aws + gomplate from apk. bash, jq, np, base64 and curl ship in the base.
