@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/nullplatform/services-s-3/compare/v0.3.2...v0.4.0) (2026-09-18)
+
+
+### Features
+
+* dependabot for base image bumps and container image scan ([48a84e6](https://github.com/nullplatform/services-s-3/commit/48a84e66127aa4dc912752fc3699b8d8c3737794))
+* dependabot for base image bumps and container image scan ([9e58a82](https://github.com/nullplatform/services-s-3/commit/9e58a825219e151cfcc272f909c0e56bbd918f05))
+
+
+### Bug Fixes
+
+* **ci:** auto-merge the release PR from workflow_run; Dependabot commits as fix(deps) ([e91a8dc](https://github.com/nullplatform/services-s-3/commit/e91a8dcb7a2b1a07100748239b7868a0aff1c785))
+* **deps:** bump nullplatform/scopes/worker-bridge from 1.0.0 to 1.1.1 ([4094424](https://github.com/nullplatform/services-s-3/commit/40944242d24c5d851aa9a30ef17518f5830bd94c))
+* grant actions read to the image scan job — the reusable declares it ([71084a0](https://github.com/nullplatform/services-s-3/commit/71084a000aac497edb7c855ca1df26e9b8619807))
+
 ## [0.3.2](https://github.com/nullplatform/services-s-3/compare/v0.3.1...v0.3.2) (2026-09-14)
 
 
