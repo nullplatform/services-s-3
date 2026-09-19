@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   release:
-    uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1.5.0
+    uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
     with:
       image_name: services/s3
       existing_tag: ${{ inputs.existing_tag || '' }}
