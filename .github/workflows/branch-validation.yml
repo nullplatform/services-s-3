@@ -7,4 +7,4 @@ on:
 
 jobs:
   branch-validation:
-    uses: nullplatform/actions-nullplatform/.github/workflows/branch-validation.yml@main
+    uses: nullplatform/actions-nullplatform/.github/workflows/branch-validation.yml@v1
