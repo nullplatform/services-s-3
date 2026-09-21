@@ -14,3 +14,22 @@ updates:
     labels:
       - "dependencies"
       - "base-image"
+
+  # Keeps the pinned refs of the shared reusable workflows current; a major arrives on its own PR.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
