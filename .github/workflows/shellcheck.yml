@@ -7,4 +7,4 @@ on:
 
 jobs:
   shellcheck:
-    uses: nullplatform/actions-nullplatform/.github/workflows/shellcheck.yml@main
+    uses: nullplatform/actions-nullplatform/.github/workflows/shellcheck.yml@v1
