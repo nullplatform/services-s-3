@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   trivy:
-    uses: nullplatform/actions-nullplatform/.github/workflows/trivy-tofu-scan.yml@main
+    uses: nullplatform/actions-nullplatform/.github/workflows/trivy-tofu-scan.yml@v1
 
   # Scans the built container image (base layers + this repo's additions) and
   # publishes the findings to the repository Security tab. Report-only: the
@@ -23,7 +23,7 @@ jobs:
       # docker-security-scan declares actions: read in its own permissions
       # block; a caller granting less fails the run at startup.
       actions: read
-    uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@main
+    uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@v1
     with:
       context: .
       image_name: services-s3
