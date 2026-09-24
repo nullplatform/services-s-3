@@ -50,6 +50,7 @@ from the request, and the service must be an instance of an accepted specificati
 |---|---|
 | `NP_API_KEY`, `NP_API_URL` | injected by the agent at spawn; used to read the service |
 | `AWS_REGION` | default region when the service has none; credentials from the default chain (IRSA in a cluster, env locally) |
+| `S3_BROWSER_ALLOW_IMDS` | `1` lets the credential chain query EC2 instance metadata (off by default: a container without a route to it hangs) |
 | `S3_BROWSER_SPECIFICATIONS` | accepted specification slugs, comma list, trailing `*` = prefix; default `aws-s3-bucket*` |
 | `S3_BROWSER_ALLOW_WRITES` | `1` enables `delete-object` |
 | `S3_BROWSER_DOWNLOAD_TTL_SECONDS` | presigned URL lifetime, default 900 |

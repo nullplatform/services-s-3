@@ -31,6 +31,11 @@ if (process.argv.includes("--describe")) {
 }
 
 const env = process.env;
+// Credentials come from IRSA, container credentials or the environment. The instance metadata
+// leg of the default chain is disabled unless asked for: in a container without a route to
+// 169.254.169.254 the connect attempt hangs long past the caller's timeout (bun does not abort
+// a pending connect on the SDK's timeout).
+if (env.S3_BROWSER_ALLOW_IMDS !== "1" && !env.AWS_EC2_METADATA_DISABLED) env.AWS_EC2_METADATA_DISABLED = "true";
 const list = (value: string | undefined, fallback: string) =>
   (value ?? fallback)
     .split(",")
