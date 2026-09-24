@@ -54,6 +54,8 @@ const app = createApp({
 // hosts, so a self-signed pair makes https://localhost:<port> a legal destination.
 const tls = env.TLS_CERT_FILE && env.TLS_KEY_FILE ? { cert: readFileSync(env.TLS_CERT_FILE), key: readFileSync(env.TLS_KEY_FILE) } : null;
 const server = tls ? createHttpsServer(tls, app) : createHttpServer(app);
+// A browser that rejects the certificate shows up here, not in the request log.
+server.on('tlsClientError', (error, socket) => console.error(`tls handshake failed from ${socket.remoteAddress}: ${error.code ?? error.message}`));
 server.listen(port, () => {
   console.log(`s3-browser-api listening on ${tls ? 'https' : 'http'}://0.0.0.0:${port} for ${publicHost}${devToken ? ' (dev token enabled)' : ''}`);
 });
