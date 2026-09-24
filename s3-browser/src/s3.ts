@@ -3,6 +3,7 @@
  * client per region, one folder level per listing.
  */
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
+import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface Folder {
@@ -85,7 +86,16 @@ export function s3ErrorStatus(error: unknown): number {
   return 502;
 }
 
-export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactory = (config) => new S3Client(config), presign = getSignedUrl, now = Date.now }: Options = {}): ObjectStore {
+/**
+ * The default credential chain, bounded: without credentials (a misconfigured worker) the SDK
+ * would otherwise probe the instance metadata endpoint for minutes, past the caller's timeout.
+ * IRSA / container credentials / env vars are found immediately; only the IMDS leg is capped.
+ */
+export function defaultClientFactory(config: S3ClientConfig): S3Client {
+  return new S3Client({ ...config, credentials: fromNodeProviderChain({ timeout: 1500, maxRetries: 0 }) });
+}
+
+export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactory = defaultClientFactory, presign = getSignedUrl, now = Date.now }: Options = {}): ObjectStore {
   const clients = new Map<string, S3Client>();
   const client = (region?: string) => {
     const name = region || defaultRegion || "us-east-1";

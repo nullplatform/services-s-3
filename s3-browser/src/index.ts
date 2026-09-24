@@ -48,10 +48,11 @@ const handler = createHandler({
 
 createPlugin({
   async execute(req) {
+    // No streamed output: every emitted line becomes a partial update on the caller's
+    // response, and the result must stay one JSON document on stdout.
     const started = Date.now();
     const result = await runCommand(req.payload, handler);
-    // stderr only: stdout is the result the caller parses.
-    req.emit({ stderr: `[s3-browser] ${req.actionType || "package-exec"} ${result.success ? "completed" : "failed"} in ${Date.now() - started} ms\n` });
+    console.error(`[s3-browser] ${result.success ? "completed" : "failed"} in ${Date.now() - started} ms`);
     return result;
   },
 }).start();
