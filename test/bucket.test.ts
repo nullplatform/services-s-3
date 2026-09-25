@@ -38,11 +38,9 @@ const notFound = Object.assign(new Error("Not Found"), { name: "NotFound" });
 beforeEach(() => {
   s3.reset();
   sts.reset();
-  sts
-    .on(AssumeRoleCommand)
-    .resolves({
-      Credentials: { AccessKeyId: "AKIA", SecretAccessKey: "secret", SessionToken: "tok", Expiration: new Date() },
-    });
+  sts.on(AssumeRoleCommand).resolves({
+    Credentials: { AccessKeyId: "AKIA", SecretAccessKey: "secret", SessionToken: "tok", Expiration: new Date() },
+  });
 });
 
 describe("create", () => {

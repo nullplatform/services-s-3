@@ -39,11 +39,9 @@ describe("link create", () => {
   test("creates the user, its scoped policy and one access key", async () => {
     iam.on(CreateUserCommand).resolves({});
     iam.on(PutUserPolicyCommand).resolves({});
-    iam
-      .on(CreateAccessKeyCommand)
-      .resolves({
-        AccessKey: { AccessKeyId: "AKIAEXAMPLE", SecretAccessKey: "s3cr3t", UserName: "u", Status: "Active" },
-      });
+    iam.on(CreateAccessKeyCommand).resolves({
+      AccessKey: { AccessKeyId: "AKIAEXAMPLE", SecretAccessKey: "s3cr3t", UserName: "u", Status: "Active" },
+    });
     const run = await pkg.run(
       connect,
       "create",
