@@ -1,26 +1,28 @@
 # syntax=docker/dockerfile:1
 #
-# aws-s3-bucket service worker image — the S3 service built on the lean gRPC
-# worker bridge. The bridge dials over gRPC and runs the bash entrypoint on
-# each package-exec action; this image adds the cloud tooling the S3 steps
-# need and bakes the service in, so the channel needs no cmdline.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.0.0
+# aws-s3-bucket worker image: the package compiled to one binary. The agent
+# starts it and dials it over gRPC; it answers every action of the service
+# and its link with the AWS SDK. No shell, no CLI, no Terraform.
 
-# Tooling the S3 workflows call (the bridge base stays minimal on purpose):
-# aws + gomplate from apk. bash, jq, np, base64 and curl ship in the base.
-RUN apk add --no-cache aws-cli gomplate
+# The SDK. Empty by default (the npm dependency resolves it); a local build
+# overrides this stage with a checkout:
+#   docker build --build-context sdk=../plugin-libraries/js .
+FROM scratch AS sdk
 
-# OpenTofu >= 1.10 — the service inits its S3 backend with use_lockfile=true,
-# which needs tofu 1.10+. alpine only packages 1.7.x, so pull the official
-# static binary for the build arch.
-ARG TOFU_VERSION=1.10.10
-ARG TARGETARCH
-RUN curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_${TARGETARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin tofu \
-    && tofu version
+FROM oven/bun:1-alpine AS build
+WORKDIR /opt/aws-s3-bucket
+COPY --from=sdk / /opt/plugin-libraries/js
+COPY package.json bun.lock* ./
+RUN bun install
+COPY src ./src
+RUN bun build --compile --target=bun-linux-x64-musl src/main.ts --outfile /out/aws-s3-bucket
 
-# Bake the service in and point the bridge at its entrypoint + service path.
-COPY . /app/pkg
-ENV NP_PACKAGE_NAME=aws-s3-bucket \
-    NP_SERVICE_PATH=/app/pkg/aws-s3-bucket \
-    NP_SCOPE_ENTRYPOINT=/app/pkg/aws-s3-bucket/entrypoint/entrypoint
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates libstdc++ libgcc \
+    && addgroup -S -g 65532 np-service-aws-s3-bucket \
+    && adduser -S -u 65532 -G np-service-aws-s3-bucket -h /home/worker np-service-aws-s3-bucket
+COPY --from=build /out/aws-s3-bucket /app/packages/aws-s3-bucket/entrypoint
+USER 65532
+ENV HOME=/home/worker \
+    NP_AGENT_PLUGIN=np-agent-v1
+ENTRYPOINT ["/app/packages/aws-s3-bucket/entrypoint"]

@@ -1,0 +1,22 @@
+{
+  "name": "aws-s3-bucket",
+  "version": "0.4.0",
+  "description": "An S3 bucket on AWS, with per-link IAM users scoped to it",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "describe": "bun src/main.ts --describe",
+    "test": "bun test",
+    "build": "bun build --compile src/main.ts --outfile dist/aws-s3-bucket"
+  },
+  "dependencies": {
+    "@aws-sdk/client-iam": "^3.1141.0",
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/client-sts": "^3.1141.0",
+    "@nullplatform/plugin": "file:../plugin-libraries/js"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "aws-sdk-client-mock": "^4.1.0"
+  }
+}

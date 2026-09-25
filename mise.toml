@@ -1,0 +1,47 @@
+[tasks.install]
+# The SDK is a file: dependency until it ships on npm; bun copies it, so drop
+# the copy first to pick up changes from the sibling checkout.
+run = ["rm -rf node_modules/@nullplatform/plugin", "bun install"]
+
+[tasks.describe]
+description = "Print the package manifest (what np package publish sends)"
+depends = ["install"]
+run = "bun src/main.ts --describe"
+
+[tasks.test]
+depends = ["install"]
+run = "bun test"
+
+[tasks.build]
+description = "Compile the worker to a single binary"
+depends = ["install"]
+run = "bun build --compile src/main.ts --outfile dist/aws-s3-bucket"
+
+[tasks."build:image"]
+description = "Build the worker image (the SDK from the sibling checkout until it is on npm)"
+run = "docker build --build-context sdk=../plugin-libraries/js -t aws-s3-bucket-worker:dev ."
+
+[tasks.run]
+description = "Run locally: an agent (docker backend) that spawns this package's worker"
+depends = ["build:image"]
+run = """
+set -eu
+: "${NP_API_KEY:?set NP_API_KEY}"
+slug="${NP_PACKAGE_SLUG:-aws-s3-bucket}"
+env_json='{}'
+[ -n "${NP_PACKAGE_ENV_JSON:-}" ] && env_json="$NP_PACKAGE_ENV_JSON"
+worker_rules='[{"match":{"package":"'"$slug"'"},"env":'"$env_json"'}]'
+docker rm -f np-aws-s3-bucket-agent >/dev/null 2>&1 || true
+stale=$(docker ps -aq --filter "name=np-worker-.*-${slug}-")
+[ -n "$stale" ] && docker rm -f $stale >/dev/null 2>&1
+# shellcheck disable=SC2086
+docker run --rm --name np-aws-s3-bucket-agent --network host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ${NP_PACKAGE_ENV_FLAGS:-} \
+  -e NP_API_KEY -e NP_LOG_LEVEL="${NP_LOG_LEVEL:-INFO}" \
+  -e NP_WORKER_BACKEND=docker \
+  -e NP_WORKER_IMAGE=aws-s3-bucket-worker:dev \
+  -e NP_WORKER_RULES="$worker_rules" \
+  "${NP_AGENT_IMAGE:-public.ecr.aws/nullplatform/controlplane-agent:latest}" \
+  -runtime=host -tags=package:"$slug",local:"${NP_LOCAL_USER:-$USER}"
+"""
