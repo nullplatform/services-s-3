@@ -66,6 +66,3 @@ mise run describe             # the manifest np package publish sends
 np package run                # a real agent on your machine, tagged local:<you>
 np package publish --nrn organization=…:account=… --bump minor
 ```
-
-The worker image builds from the SDK on npm; while the SDK ships from a
-sibling checkout, `mise run build:image` passes it as a build context.

@@ -1,7 +1,5 @@
 [tasks.install]
-# The SDK is a file: dependency until it ships on npm; bun copies it, so drop
-# the copy first to pick up changes from the sibling checkout.
-run = ["rm -rf node_modules/@nullplatform/plugin", "bun install"]
+run = "bun install"
 
 [tasks.describe]
 description = "Print the package manifest (what np package publish sends)"
@@ -18,8 +16,8 @@ depends = ["install"]
 run = "bun build --compile src/main.ts --outfile dist/aws-s3-bucket"
 
 [tasks."build:image"]
-description = "Build the worker image (the SDK from the sibling checkout until it is on npm)"
-run = "docker build --build-context sdk=../plugin-libraries/js -t aws-s3-bucket-worker:dev ."
+description = "Build the worker image"
+run = "docker build -t aws-s3-bucket-worker:dev ."
 
 [tasks.run]
 description = "Run locally: an agent (docker backend) that spawns this package's worker"
