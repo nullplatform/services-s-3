@@ -6,8 +6,18 @@ describe("linkPolicy", () => {
     expect(linkPolicy({ bucketArn: "arn:aws:s3:::np-orders-uploads", accessLevel: "read-write" })).toEqual({
       Version: "2012-10-17",
       Statement: [
-        { Sid: "BucketLevel", Effect: "Allow", Action: ["s3:ListBucket", "s3:GetBucketLocation"], Resource: "arn:aws:s3:::np-orders-uploads" },
-        { Sid: "ObjectLevel", Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"], Resource: "arn:aws:s3:::np-orders-uploads/*" },
+        {
+          Sid: "BucketLevel",
+          Effect: "Allow",
+          Action: ["s3:ListBucket", "s3:GetBucketLocation"],
+          Resource: "arn:aws:s3:::np-orders-uploads",
+        },
+        {
+          Sid: "ObjectLevel",
+          Effect: "Allow",
+          Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+          Resource: "arn:aws:s3:::np-orders-uploads/*",
+        },
       ],
     });
   });

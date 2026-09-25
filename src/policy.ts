@@ -48,6 +48,10 @@ export const iamUserName = (linkId: string): string => `np-s3-${linkId.replace(/
 
 /** `<np-service-name>-<suffix>`, lowercase, at most 63 characters — as build_context computed it. */
 export function bucketNameFor(serviceName: string, serviceId: string, suffix: string): string {
-  const base = (serviceName || `svc-${serviceId}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 55);
+  const base = (serviceName || `svc-${serviceId}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 55);
   return `np-${base}-${suffix}`.toLowerCase().slice(0, 63);
 }

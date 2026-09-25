@@ -23,7 +23,8 @@ export const bucket = service({
         bucket_name_suffix: {
           type: "string",
           title: "Bucket Name Suffix",
-          description: "Suffix used to build the bucket name (combined with service name). Must be lowercase alphanumeric with hyphens, 3-40 chars.",
+          description:
+            "Suffix used to build the bucket name (combined with service name). Must be lowercase alphanumeric with hyphens, 3-40 chars.",
           pattern: "^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$",
           editableOn: ["create"],
           order: 1,
@@ -41,7 +42,8 @@ export const bucket = service({
           title: "Encryption",
           default: "AES256",
           enum: ["AES256", "aws:kms"],
-          description: "Server-side encryption algorithm (AES256 uses S3-managed keys; aws:kms uses the AWS-managed KMS key)",
+          description:
+            "Server-side encryption algorithm (AES256 uses S3-managed keys; aws:kms uses the AWS-managed KMS key)",
           editableOn: ["create", "update"],
           order: 3,
         },
@@ -112,14 +114,16 @@ export const connect = link(bucket, {
           enum: ["read", "write", "read-write"],
           default: "read-write",
           editableOn: ["create", "update"],
-          description: "Permission level: read (GetObject/ListBucket), write (PutObject/DeleteObject), read-write (both)",
+          description:
+            "Permission level: read (GetObject/ListBucket), write (PutObject/DeleteObject), read-write (both)",
           order: 1,
         },
         path_prefix: {
           type: "string",
           title: "Path Prefix",
           default: "",
-          description: "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access.",
+          description:
+            "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access.",
           editableOn: ["create", "update"],
           order: 2,
         },
