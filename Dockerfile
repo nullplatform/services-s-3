@@ -12,10 +12,17 @@ FROM scratch AS sdk
 FROM oven/bun:1-alpine AS build
 WORKDIR /opt/aws-s3-bucket
 COPY --from=sdk / /opt/plugin-libraries/js
+# A checkout of the SDK brings its sources, not its dependencies: install them
+# next to it so the bundler resolves them from there. A no-op when the stage
+# is empty (the SDK then comes from npm through package.json).
+RUN if [ -f /opt/plugin-libraries/js/package.json ]; then cd /opt/plugin-libraries/js && rm -f bun.lock && bun install --production; fi
 COPY package.json bun.lock* ./
 RUN bun install
 COPY src ./src
-RUN bun build --compile --target=bun-linux-x64-musl src/main.ts --outfile /out/aws-s3-bucket
+# Compile for the image's own architecture (bun names amd64 "x64").
+ARG TARGETARCH
+RUN arch=$([ "$TARGETARCH" = "amd64" ] && echo x64 || echo "$TARGETARCH") \
+    && bun build --compile --target="bun-linux-${arch}-musl" src/main.ts --outfile /out/aws-s3-bucket
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates libstdc++ libgcc \
@@ -24,5 +31,6 @@ RUN apk add --no-cache ca-certificates libstdc++ libgcc \
 COPY --from=build /out/aws-s3-bucket /app/packages/aws-s3-bucket/entrypoint
 USER 65532
 ENV HOME=/home/worker \
+    SUPPRESS_NO_CONFIG_WARNING=1 \
     NP_AGENT_PLUGIN=np-agent-v1
 ENTRYPOINT ["/app/packages/aws-s3-bucket/entrypoint"]
