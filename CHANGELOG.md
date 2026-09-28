@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/nullplatform/services-s-3/compare/v0.4.0...v0.5.0) (2026-09-28)
+
+
+### Features
+
+* run the worker image as a non-root user ([cebc5f4](https://github.com/nullplatform/services-s-3/commit/cebc5f488a7aec60bd15db020cad95a3b7d05030))
+* run the worker image as a non-root user ([cd95f48](https://github.com/nullplatform/services-s-3/commit/cd95f481227ec5aad5b5bcbcaff7ba3b8809e2bf))
+
 ## [0.4.0](https://github.com/nullplatform/services-s-3/compare/v0.3.2...v0.4.0) (2026-09-18)
 
 
