@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.1](https://github.com/nullplatform/services-s-3/compare/v0.5.0...v0.5.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* fail loudly when link or service outputs cannot be read ([93fb411](https://github.com/nullplatform/services-s-3/commit/93fb411e763573326b64d0689557cdb49052a14f))
+* fail the link step when a credential output cannot be read ([f9615c0](https://github.com/nullplatform/services-s-3/commit/f9615c0fee38f7c6a7f9d85488c4888bd952b105))
+* fail the service step when a bucket output cannot be read ([b1f53f1](https://github.com/nullplatform/services-s-3/commit/b1f53f1721fd3316f4069f2713485c341f201056))
+* keep the assumed role credentials intact when writing link outputs ([c69c5d8](https://github.com/nullplatform/services-s-3/commit/c69c5d8427bf7879e6734ee4e56804dbfc7946cf))
+
 ## [0.5.0](https://github.com/nullplatform/services-s-3/compare/v0.4.0...v0.5.0) (2026-09-28)
 
 
