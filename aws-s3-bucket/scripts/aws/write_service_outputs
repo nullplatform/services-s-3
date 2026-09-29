@@ -15,14 +15,24 @@ SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
 
 echo "Reading Terraform outputs for service $SERVICE_ID..."
 
-BUCKET_NAME=$(tofu output -raw bucket_name 2>/dev/null || echo "")
-BUCKET_ARN=$(tofu output -raw bucket_arn 2>/dev/null || echo "")
-BUCKET_REGION=$(tofu output -raw bucket_region 2>/dev/null || echo "")
+# Reads a required output; fails loudly rather than leaving the service
+# without attributes, which only surfaces later when a link is created.
+read_output() {
+  local value
+  if ! value=$(tofu output -raw "$1"); then
+    echo "ERROR: could not read output $1 for service $SERVICE_ID." >&2
+    return 1
+  fi
+  if [ -z "$value" ]; then
+    echo "ERROR: output $1 is empty for service $SERVICE_ID." >&2
+    return 1
+  fi
+  printf '%s' "$value"
+}
 
-if [ -z "$BUCKET_NAME" ]; then
-  echo "WARNING: No bucket_name output found. Skipping attribute update."
-  exit 0
-fi
+BUCKET_NAME=$(read_output bucket_name) || exit 1
+BUCKET_ARN=$(read_output bucket_arn) || exit 1
+BUCKET_REGION=$(read_output bucket_region) || exit 1
 
 ATTRS=$(jq -n \
   --arg bucket_name   "$BUCKET_NAME" \

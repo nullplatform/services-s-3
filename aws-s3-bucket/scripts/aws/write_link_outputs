@@ -16,22 +16,34 @@ LINK_ID_VAL=$(echo "$CONTEXT" | jq -r '.link.id')
 
 echo "Reading Terraform outputs for link $LINK_ID_VAL..."
 
-AWS_ACCESS_KEY_ID=$(tofu output -raw aws_access_key_id 2>/dev/null || echo "")
-AWS_SECRET_ACCESS_KEY=$(tofu output -raw aws_secret_access_key 2>/dev/null || echo "")
-IAM_USER_NAME=$(tofu output -raw iam_user_name 2>/dev/null || echo "")
+# Reads a required output; fails loudly rather than persisting an empty
+# credential that only breaks when the linked app calls S3.
+read_output() {
+  local value
+  if ! value=$(tofu output -raw "$1"); then
+    echo "ERROR: could not read output $1 for link $LINK_ID_VAL." >&2
+    return 1
+  fi
+  if [ -z "$value" ]; then
+    echo "ERROR: output $1 is empty for link $LINK_ID_VAL." >&2
+    return 1
+  fi
+  printf '%s' "$value"
+}
 
-if [ -z "$AWS_ACCESS_KEY_ID" ]; then
-  echo "WARNING: No aws_access_key_id output found. Skipping link attribute update."
-  exit 0
-fi
+# Don't reuse AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: they carry the assumed
+# role's credentials, and overwriting them breaks auth for later `tofu output` calls.
+LINK_ACCESS_KEY_ID=$(read_output aws_access_key_id) || exit 1
+LINK_SECRET_ACCESS_KEY=$(read_output aws_secret_access_key) || exit 1
+LINK_IAM_USER_NAME=$(read_output iam_user_name) || exit 1
 
-# Only persist attributes unique to the link. bucket_name and region are
+# Only persist attributes unique to the link. bucket_name and bucket_region are
 # already exposed by the service itself (see service-spec.json.tpl) — keeping
 # them here would duplicate the env vars injected into linked apps.
 ATTRS=$(jq -n \
-  --arg access_key_id     "$AWS_ACCESS_KEY_ID" \
-  --arg secret_access_key "$AWS_SECRET_ACCESS_KEY" \
-  --arg iam_user_name     "$IAM_USER_NAME" \
+  --arg access_key_id     "$LINK_ACCESS_KEY_ID" \
+  --arg secret_access_key "$LINK_SECRET_ACCESS_KEY" \
+  --arg iam_user_name     "$LINK_IAM_USER_NAME" \
   '{
     aws_access_key_id:     $access_key_id,
     aws_secret_access_key: $secret_access_key,
@@ -39,9 +51,9 @@ ATTRS=$(jq -n \
   }')
 
 echo "Updating link $LINK_ID_VAL attributes:"
-echo "  aws_access_key_id:     $AWS_ACCESS_KEY_ID"
+echo "  aws_access_key_id:     $LINK_ACCESS_KEY_ID"
 echo "  aws_secret_access_key: ****"
-echo "  iam_user_name:         $IAM_USER_NAME"
+echo "  iam_user_name:         $LINK_IAM_USER_NAME"
 
 np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}"
 echo "Link attributes updated successfully."
