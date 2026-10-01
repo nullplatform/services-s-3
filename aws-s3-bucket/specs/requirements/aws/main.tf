@@ -97,7 +97,11 @@ resource "aws_iam_policy" "nullplatform_s3_iam" {
           "iam:DeleteUserPolicy",
           "iam:GetUserPolicy",
           "iam:ListUserPolicies",
-          "iam:ListAttachedUserPolicies"
+          "iam:ListAttachedUserPolicies",
+          # The AWS provider always clears group memberships before DeleteUser,
+          # even with force_destroy = false; without these, unlink fails with 403.
+          "iam:ListGroupsForUser",
+          "iam:RemoveUserFromGroup"
         ],
         "Resource" : "*"
       }
