@@ -6,7 +6,7 @@
  */
 import type { ExecuteResult } from "@nullplatform/plugin";
 import { type Command, CommandError, parseCommand } from "./protocol";
-import { type Platform, PlatformError, resolveBucket } from "./platform";
+import { type Platform, PlatformError, bucketFromEnvelope, resolveBucket } from "./platform";
 import { type ObjectStore, StoreError } from "./s3";
 
 export interface HandlerConfig {
@@ -20,8 +20,10 @@ export type Handler = (command: Command) => Promise<unknown>;
 
 export function createHandler({ platform, store, config }: { platform: Platform; store: ObjectStore; config: HandlerConfig }): Handler {
   return async (command) => {
-    const { bucket, region } = await resolveBucket(platform, command.service_id, config.specifications);
-    const target = { bucket, region };
+    // Gate writes before any lookup: a refused delete costs no platform call.
+    if (command.action === "delete-object" && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
+    const resolved = bucketFromEnvelope(command.service, config.specifications) ?? (await resolveBucket(platform, command.service_id, config.specifications));
+    const target = { bucket: resolved.bucket, region: resolved.region };
     switch (command.action) {
       case "list-objects":
         return store.list(target, command.prefix, command.token, command.limit);
@@ -30,7 +32,6 @@ export function createHandler({ platform, store, config }: { platform: Platform;
       case "presign-download":
         return store.presign(target, command.key!);
       case "delete-object":
-        if (!config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
         return store.remove(target, command.key!);
     }
   };
