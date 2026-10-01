@@ -1,0 +1,69 @@
+{
+  "name": "Head object",
+  "slug": "head-object",
+  "type": "custom",
+  "parallelize": true,
+  "parameters": {
+    "schema": {
+      "type": "object",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^/].*[^/]$|^[^/]$",
+          "title": "Key",
+          "description": "Relative object key (no leading or trailing slash)"
+        }
+      }
+    },
+    "values": {}
+  },
+  "results": {
+    "schema": {
+      "type": "object",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "required": [
+        "key",
+        "size",
+        "last_modified",
+        "metadata"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "last_modified": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "etag": {
+          "type": "string"
+        },
+        "storage_class": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "values": {}
+  }
+}

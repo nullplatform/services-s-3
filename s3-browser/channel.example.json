@@ -1,0 +1,48 @@
+{
+  "name": "s3-browser actions",
+  "type": "agent",
+  "nrn": "organization=<org id>:account=<account id>",
+  "source": [
+    "service"
+  ],
+  "filters": {
+    "$and": [
+      {
+        "type": {
+          "$eq": "service:action:create"
+        }
+      },
+      {
+        "service.specification.slug": {
+          "$in": [
+            "aws-s3-bucket"
+          ]
+        }
+      },
+      {
+        "specification.slug": {
+          "$in": [
+            "list-objects",
+            "head-object",
+            "presign-download",
+            "delete-object"
+          ]
+        }
+      }
+    ]
+  },
+  "configuration": {
+    "selector": {
+      "package": "s3-browser"
+    },
+    "command": {
+      "type": "package-exec",
+      "data": {
+        "package": "s3-browser",
+        "environment": {
+          "NP_ACTION_CONTEXT": "${NOTIFICATION_CONTEXT}"
+        }
+      }
+    }
+  }
+}

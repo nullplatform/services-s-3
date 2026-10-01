@@ -1,0 +1,127 @@
+{
+  "name": "List objects",
+  "slug": "list-objects",
+  "type": "custom",
+  "parallelize": true,
+  "parameters": {
+    "schema": {
+      "type": "object",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^[^/]",
+          "title": "Prefix",
+          "description": "Relative key prefix, usually ending in /"
+        },
+        "token": {
+          "type": "string",
+          "title": "Continuation token"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 200,
+          "title": "Limit"
+        }
+      }
+    },
+    "values": {}
+  },
+  "results": {
+    "schema": {
+      "type": "object",
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "required": [
+        "bucket",
+        "region",
+        "prefix",
+        "folders",
+        "objects",
+        "next_token",
+        "truncated"
+      ],
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "folders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "prefix",
+              "name"
+            ],
+            "properties": {
+              "prefix": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "name",
+              "size",
+              "last_modified"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "size": {
+                "type": "number"
+              },
+              "last_modified": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "storage_class": {
+                "type": "string"
+              },
+              "etag": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "next_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "values": {}
+  }
+}
