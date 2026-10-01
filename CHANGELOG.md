@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/nullplatform/services-s-3/compare/v0.5.1...v0.5.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.0 to 2.0.1 ([f312d1a](https://github.com/nullplatform/services-s-3/commit/f312d1ae520dc061b7580949e650101fd48ac189))
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.0 to 2.0.1 ([ef3bb57](https://github.com/nullplatform/services-s-3/commit/ef3bb57f612792a02e754751452fceaf466b4d07))
+
 ## [0.5.1](https://github.com/nullplatform/services-s-3/compare/v0.5.0...v0.5.1) (2026-09-29)
 
 
