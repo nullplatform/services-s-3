@@ -1,5 +1,5 @@
 {
-  "name": "s3-browser actions",
+  "description": "s3-browser actions",
   "type": "agent",
   "nrn": "organization=<org id>:account=<account id>",
   "source": [
@@ -8,7 +8,7 @@
   "filters": {
     "$and": [
       {
-        "type": {
+        "action": {
           "$eq": "service:action:create"
         }
       },
@@ -32,6 +32,7 @@
     ]
   },
   "configuration": {
+    "api_key": "<nullplatform api key>",
     "selector": {
       "package": "s3-browser"
     },
@@ -39,6 +40,7 @@
       "type": "package-exec",
       "data": {
         "package": "s3-browser",
+        "cmdline": "s3-browser",
         "environment": {
           "NP_ACTION_CONTEXT": "${NOTIFICATION_CONTEXT}"
         }

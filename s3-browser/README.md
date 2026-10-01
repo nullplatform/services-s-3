@@ -62,11 +62,13 @@ key, `405` writes disabled, `409` bucket not provisioned yet. A worker that cann
    with each file as the body). They are not wired into the service's tofu module: that module
    registers the service definition from `aws-s3-bucket/specs`, which has no action list.
 2. **Channel.** Create an agent notification channel from [`channel.example.json`](channel.example.json)
-   (`POST /notification/channel`, fill in `nrn`). It matches `service:action:create`
+   (`POST /notification/channel`, fill in `nrn` and `api_key`). It matches `service:action:create`
    notifications for `aws-s3-bucket` and these four slugs, and runs `package-exec` of the
-   `s3-browser` package on the agent with the `{ package: "s3-browser" }` selector.
-3. **Grants (optional).** Without them anyone allowed to create service actions can run all four.
-   To restrict the delete, add `authorization` to the service specification
+   `s3-browser` package on the agent with the `{ package: "s3-browser" }` selector. The channel
+   validator requires `api_key`, `selector`, `command.type` and a non-empty `command.data.cmdline`.
+3. **Grants.** Without them anyone allowed to create service actions can run the three reads.
+   `delete-object` declares `custom:s3:objectdelete`, so nobody can run it until a grant names
+   that permission. Add `authorization` to the service specification
    (`custom:` names are never sent to auth-z; the caller must be granted the name):
 
 ```json
