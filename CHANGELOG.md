@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/nullplatform/services-s-3/compare/v0.5.2...v0.5.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* let the permissions role remove link users on unlink ([c7730f6](https://github.com/nullplatform/services-s-3/commit/c7730f6d38462ef573de0c6818998c898a33a1e9))
+
 ## [0.5.2](https://github.com/nullplatform/services-s-3/compare/v0.5.1...v0.5.2) (2026-10-01)
 
 
