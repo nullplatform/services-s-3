@@ -101,3 +101,46 @@ describe("platform", () => {
     expect(seen).toEqual(["POST https://api.test/token", "GET https://api.test/service/svc-1"]);
   });
 });
+
+describe("service-action envelope", () => {
+  const envelope = (slug: string, parameters: unknown, service: Record<string, unknown> = {}) =>
+    JSON.stringify({ notification: { specification: { slug }, parameters, service: { id: "svc-bucket", specification: { slug: "aws-s3-bucket" }, attributes: { bucket_name: "bucket-from-envelope", bucket_region: "us-east-2" }, ...service } } });
+  const never = async (): Promise<never> => {
+    throw new Error("must not be called");
+  };
+
+  test("prefers the attributes the platform sent over a lookup", async () => {
+    const direct = createHandler({ platform: { getService: never, getSpecification: never }, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
+    const result = await runCommand(envelope("list-objects", { prefix: "docs/" }), direct);
+    expect(result.success).toBe(true);
+    expect(parse(result)).toMatchObject({ bucket: "bucket-from-envelope", region: "us-east-2" });
+  });
+
+  test("falls back to resolving the service by id", async () => {
+    for (const service of [{ attributes: {} }, { specification: {} }]) {
+      expect(parse(await runCommand(envelope("list-objects", {}, service), handler))).toMatchObject({ bucket: "np-svc-bucket", region: "eu-west-1" });
+    }
+  });
+
+  test("a bucket in the parameters is ignored", async () => {
+    const result = await runCommand(envelope("list-objects", { bucket: "attacker-bucket", bucket_name: "attacker-bucket", region: "x" }), handler);
+    expect(parse(result).bucket).toBe("bucket-from-envelope");
+    const viaLookup = await runCommand(envelope("head-object", { key: "a.txt", bucket: "attacker-bucket" }, { attributes: {} }), handler);
+    expect(JSON.stringify(calls)).not.toContain("attacker-bucket");
+    expect(parse(viaLookup).key).toBe("a.txt");
+  });
+
+  test("an envelope for a service of another specification is not trusted", async () => {
+    const result = parse(await runCommand(envelope("list-objects", {}, { id: "svc-db", specification: { slug: "rds-postgres" } }), handler));
+    expect(result.error).toMatchObject({ status: 400, code: "NOT_A_BUCKET" });
+  });
+
+  test("delete-object is refused without the env flag and works with it", async () => {
+    const before = calls.length;
+    const refused = await runCommand(envelope("delete-object", { key: "docs/a.txt" }), handler);
+    expect(parse(refused).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
+    expect(calls.length).toBe(before);
+    const writable = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+    expect(parse(await runCommand(envelope("delete-object", { key: "docs/a.txt" }), writable))).toEqual({ key: "docs/a.txt" });
+  });
+});

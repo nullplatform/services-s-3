@@ -98,3 +98,15 @@ export async function resolveBucket(platform: Platform, serviceId: string, speci
   const region = typeof attributes.bucket_region === "string" && attributes.bucket_region ? attributes.bucket_region : undefined;
   return { service, specification, bucket, region };
 }
+
+/**
+ * The bucket from the service the platform put in the action envelope, when it names one and
+ * is of an accepted specification; undefined means "look the service up instead".
+ */
+export function bucketFromEnvelope(service: { attributes: Record<string, unknown>; specification_slug?: string } | undefined, specifications: string[]): { bucket: string; region: string | undefined } | undefined {
+  if (!service?.specification_slug || !matchesSpecification(service.specification_slug, specifications)) return undefined;
+  const bucket = service.attributes.bucket_name;
+  if (typeof bucket !== "string" || !bucket) return undefined;
+  const region = service.attributes.bucket_region;
+  return { bucket, region: typeof region === "string" && region ? region : undefined };
+}
