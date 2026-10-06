@@ -1,0 +1,36 @@
+name: beta
+
+# Publica una imagen beta por cada pull request de este repositorio: al abrirlo,
+# en cada push y al reabrirlo. publish-test-image-oci buildea el head del PR, lo
+# sube a beta/services/s3 como test-<rama>-<sha corto> y lo registra como
+# artifact oci_image de nullplatform, para probarlo en un scope antes del merge.
+#
+# El rol beta acepta el sub `pull_request` de los repos services-*/scopes* y solo
+# escribe bajo beta/*, así que una beta nunca pisa una imagen de release. Nada
+# borra los tags beta.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Un push nuevo al mismo PR reemplaza el build en curso.
+concurrency:
+  group: beta-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  beta:
+    # Sin forks (GitHub no les da token OIDC ni secrets) y sin bots de dependencias
+    # (Dependabot no recibe secrets; Renovate generaría una beta por cada bump).
+    if: >-
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.type != 'Bot' }}
+    uses: nullplatform/actions-nullplatform/.github/workflows/publish-test-image-oci.yml@v1
+    with:
+      image_name: beta/services/s3
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_BETA_ROLE_ARN }}
+      artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
