@@ -1,18 +1,20 @@
 name: beta
 
-# Publica una imagen beta por cada pull request de este repositorio: al abrirlo,
-# en cada push y al reabrirlo. publish-test-image-oci buildea el head del PR, lo
-# sube a beta/services/s3 como test-<rama>-<sha corto> y lo registra como
-# artifact oci_image de nullplatform, para probarlo en un scope antes del merge.
+# Publishes a beta image from every pull request of this repository: when it is
+# opened, on each push and when it is reopened. publish-test-image-oci builds the
+# pull request head, pushes it to the image's `beta/` repository as
+# test-<branch>-<short sha> and registers it as a nullplatform oci_image artifact,
+# so the service can be tried on a test scope before the merge.
 #
-# El rol beta acepta el sub `pull_request` de los repos services-*/scopes* y solo
-# escribe bajo beta/*, así que una beta nunca pisa una imagen de release. Nada
-# borra los tags beta.
+# The beta role trusts the `pull_request` sub of the services-*/scopes*
+# repositories and can only write under beta/*, so a beta can never overwrite a
+# released image. Every published image already has its beta/ repository (the
+# dispatcher creates it with the image). Nothing deletes beta tags.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-# Un push nuevo al mismo PR reemplaza el build en curso.
+# A newer push to the same pull request supersedes the running build.
 concurrency:
   group: beta-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -23,13 +25,16 @@ permissions:
 
 jobs:
   beta:
-    # Sin forks (GitHub no les da token OIDC ni secrets) y sin bots de dependencias
-    # (Dependabot no recibe secrets; Renovate generaría una beta por cada bump).
+    # The template repository never publishes. Fork pull requests get no OIDC token
+    # nor secrets, and dependency bots are skipped: Dependabot gets no secrets and
+    # Renovate would publish a beta for every bump.
     if: >-
-      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+      ${{ !github.event.repository.is_template &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.user.type != 'Bot' }}
     uses: nullplatform/actions-nullplatform/.github/workflows/publish-test-image-oci.yml@v1
     with:
+      # Always `beta/` + the image_name in release.yml.
       image_name: beta/services/s3
     secrets:
       aws_role_arn: ${{ secrets.AWS_BETA_ROLE_ARN }}
