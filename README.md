@@ -145,3 +145,4 @@ S3 bucket names are globally unique across all AWS accounts. The combination `np
 ### State locking
 
 OpenTofu uses native S3 lockfile (`use_lockfile=true`). Concurrent `apply` runs are serialized — the second one waits for the lock and then sees the up-to-date state, producing idempotent behavior on retries.
+
