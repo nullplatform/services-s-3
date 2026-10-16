@@ -18,7 +18,7 @@ const manifest = {
   command_types: ["custom"],
   agent: {
     selector: { package: SLUG },
-    sources: ["service"],
+    sources: ["service", "catalog"],
   },
 };
 registerManifest(manifest);

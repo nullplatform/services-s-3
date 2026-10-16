@@ -1,5 +1,5 @@
 /**
- * What the worker receives as NP_ACTION_CONTEXT / the execute() payload, in two shapes:
+ * What the worker receives as NP_ACTION_CONTEXT / the execute() payload, in three shapes:
  *
  * - the service-action envelope `{ notification: { specification: { slug }, parameters,
  *   service: { id, attributes, specification: { slug } } } }`, built by the services API for
@@ -7,7 +7,11 @@
  * - the legacy direct command `{ action, service_id, ...fields }` sent through
  *   `POST /controlplane/agent_command` (optionally nested under `command`).
  *
- * Both reduce to a `Command`; only the fields below matter here.
+ * - the catalog envelope `{ notification: { action: "catalog:action:create", slug, input,
+ *   entity: { bucket_name, region } } }`, built by the catalog API for an executor with
+ *   `transport: notification`.
+ *
+ * All reduce to a `Command`; only the fields below matter here.
  */
 export const ACTIONS = ["list-objects", "head-object", "presign-download", "delete-object"] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -21,6 +25,8 @@ export interface Command {
   limit: number;
   key?: string;
   /** Present for the action envelope: what the platform sent about the service. Never caller-controlled. */
+  /** Present for the catalog envelope: the catalog instance IS the bucket, no lookup. */
+  catalog?: { bucket: string; region: string };
   service?: { attributes: Record<string, unknown>; specification_slug?: string };
 }
 
@@ -51,10 +57,22 @@ export function parseCommand(raw: unknown): Command {
   // The action envelope: no legacy `action`/`command`, the operation is the action slug.
   const notification = record(outer.notification);
   const slug = record(notification?.specification)?.slug;
-  const isEnvelope = outer.action === undefined && outer.command === undefined && typeof slug === "string";
+  const catalogEntity = record(notification?.entity);
+  const isCatalog =
+    outer.action === undefined && outer.command === undefined && notification !== undefined &&
+    (notification.action === "catalog:action:create" || (typeof notification.slug === "string" && record(notification.input) !== undefined && catalogEntity !== undefined));
+  const isEnvelope = !isCatalog && outer.action === undefined && outer.command === undefined && typeof slug === "string";
   let body: Record<string, unknown>;
   let service: Command["service"];
-  if (isEnvelope) {
+  let catalog: Command["catalog"];
+  if (isCatalog) {
+    // Operation = slug, fields = input; bucket and region come from the entity only.
+    const { bucket, region } = { bucket: catalogEntity?.bucket_name, region: catalogEntity?.region };
+    if (typeof bucket !== "string" || !bucket) throw new CommandError("entity.bucket_name is required", 400, "NO_BUCKET");
+    if (typeof region !== "string" || !region) throw new CommandError("entity.region is required", 400, "NO_REGION");
+    body = { ...(record(notification!.input) ?? {}), action: notification!.slug, service_id: "catalog" };
+    catalog = { bucket, region };
+  } else if (isEnvelope) {
     const entity = record(notification!.service);
     body = { ...(record(notification!.parameters) ?? {}), action: slug, service_id: entity?.id };
     service = { attributes: record(entity?.attributes) ?? {}, specification_slug: typeof record(entity?.specification)?.slug === "string" ? (record(entity?.specification)!.slug as string) : undefined };
@@ -84,6 +102,7 @@ export function parseCommand(raw: unknown): Command {
     if (!key || key.startsWith("/") || key.endsWith("/") || key.length > KEY_MAX) throw new CommandError("key is required (a relative object key)", 400);
   }
   const command: Command = { action: action as Action, service_id: serviceId, prefix, token, limit, key };
+  if (catalog) command.catalog = catalog;
   if (service) command.service = service;
   return command;
 }

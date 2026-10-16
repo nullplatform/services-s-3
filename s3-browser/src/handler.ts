@@ -22,7 +22,7 @@ export function createHandler({ platform, store, config }: { platform: Platform;
   return async (command) => {
     // Gate writes before any lookup: a refused delete costs no platform call.
     if (command.action === "delete-object" && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
-    const resolved = bucketFromEnvelope(command.service, config.specifications) ?? (await resolveBucket(platform, command.service_id, config.specifications));
+    const resolved = command.catalog ?? bucketFromEnvelope(command.service, config.specifications) ?? (await resolveBucket(platform, command.service_id, config.specifications));
     const target = { bucket: resolved.bucket, region: resolved.region };
     switch (command.action) {
       case "list-objects":

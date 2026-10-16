@@ -144,3 +144,40 @@ describe("service-action envelope", () => {
     expect(parse(await runCommand(envelope("delete-object", { key: "docs/a.txt" }), writable))).toEqual({ key: "docs/a.txt" });
   });
 });
+
+describe("catalog envelope", () => {
+  const entity = { id: "i-1", bucket_name: "acme-logs", region: "us-east-1" };
+  const run = (notification: Record<string, unknown>, h = handler) =>
+    runCommand(JSON.stringify({ notification: { action: "catalog:action:create", slug: "list-objects", input: {}, entity, ...notification } }), h);
+
+  test("bucket and region come from the entity, fields from input", async () => {
+    const result = await run({ input: { prefix: "logs/", limit: 5 } });
+    expect(parse(result)).toMatchObject({ bucket: "acme-logs", region: "us-east-1", prefix: "logs/" });
+    expect(calls.at(-1)).toEqual(["list", { bucket: "acme-logs", region: "us-east-1" }, "logs/", undefined, 5]);
+  });
+
+  test("a bucket or region inside input is ignored", async () => {
+    await run({ input: { bucket: "evil", bucket_name: "evil", region: "xx-1", bucket_region: "xx-1" } });
+    expect(calls.at(-1)).toEqual(["list", { bucket: "acme-logs", region: "us-east-1" }, "", undefined, 200]);
+  });
+
+  test("detected without the action field when slug, input and entity are present", async () => {
+    const result = await runCommand(JSON.stringify({ notification: { slug: "head-object", input: { key: "a.txt" }, entity } }), handler);
+    expect(parse(result)).toMatchObject({ key: "a.txt" });
+  });
+
+  test("missing region or bucket is an error answer, no lookup", async () => {
+    const noRegion = await run({ entity: { id: "svc-bucket", bucket_name: "acme-logs" } });
+    expect(noRegion.success).toBe(true);
+    expect(parse(noRegion).error).toMatchObject({ status: 400, code: "NO_REGION" });
+    const noBucket = await run({ entity: { id: "svc-bucket", region: "us-east-1" } });
+    expect(parse(noBucket).error).toMatchObject({ status: 400, code: "NO_BUCKET" });
+  });
+
+  test("delete-object is gated by the write switch", async () => {
+    const gated = await run({ slug: "delete-object", input: { key: "a.txt" } });
+    expect(parse(gated).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
+    const open = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+    expect(parse(await run({ slug: "delete-object", input: { key: "a.txt" } }, open))).toEqual({ key: "a.txt" });
+  });
+});

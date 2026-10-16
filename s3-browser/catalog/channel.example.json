@@ -1,0 +1,40 @@
+{
+  "description": "s3-browser catalog actions",
+  "type": "agent",
+  "nrn": "organization=<org id>:account=<account id>",
+  "source": [
+    "catalog"
+  ],
+  "filters": {
+    "$and": [
+      {
+        "action": {
+          "$eq": "catalog:action:create"
+        }
+      },
+      {
+        "specification.slug": {
+          "$in": [
+            "aws-s3-bucket"
+          ]
+        }
+      }
+    ]
+  },
+  "configuration": {
+    "api_key": "<nullplatform api key>",
+    "selector": {
+      "package": "s3-browser"
+    },
+    "command": {
+      "type": "package-exec",
+      "data": {
+        "package": "s3-browser",
+        "cmdline": "s3-browser",
+        "environment": {
+          "NP_ACTION_CONTEXT": "${NOTIFICATION_CONTEXT}"
+        }
+      }
+    }
+  }
+}

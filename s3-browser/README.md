@@ -93,6 +93,49 @@ key, `405` writes disabled, `409` bucket not provisioned yet. A worker that cann
 The bucket must come from an instance of an accepted specification
 (`S3_BROWSER_SPECIFICATIONS`, default `aws-s3-bucket*`); the pod's IAM (IRSA) reads the bucket.
 
+## On the catalog
+
+Use the catalog path when no service sits behind the bucket, or when the plugin lives on a
+catalog page. The catalog instance IS the bucket: `bucket_name` and `region` are properties of
+the instance, so there is no service lookup. The service-action path above is unchanged.
+
+```
+plugin ── POST /catalog/actions/aws-s3-bucket/{bucket_name}/list-objects {input} ──▶ catalog API
+catalog (execution: sync, executor transport: notification) ── notification, source catalog ──▶ notifications ──▶ agent ──▶ worker ──▶ S3
+catalog ◀── 200 with the worker's JSON, validated against the action `output` ◀──────────┘
+```
+
+Files in [`catalog/`](catalog/):
+
+- [`aws-s3-bucket.specification.json`](catalog/aws-s3-bucket.specification.json): the entity
+  specification. `bucket_name` is the primary key, `region` is indexed, `nrn` marks the NRN. The four
+  actions are `sync`, with `input`/`output` copied from `actions/*.json` (a test keeps them equal).
+  Reads are granted to everyone; `delete-object` has `permission: custom:s3:objectdelete`.
+- [`executors.json`](catalog/executors.json): four bodies, each `POST /catalog/specifications/{id}/executors`
+  (`transport: notification`, `timeout_ms: 15000`).
+- [`channel.example.json`](catalog/channel.example.json): agent channel on `source: catalog`,
+  `action == catalog:action:create` and `specification.slug == aws-s3-bucket`.
+
+The delete is granted by whoever installs the specification, for example on top of the grants in it:
+
+```json
+{ "principals": [{ "type": "role", "id": 9 }], "actions": ["custom:s3:objectdelete"] }
+```
+
+Envelope (`NP_ACTION_CONTEXT = {"notification": <context>}`), detected when
+`notification.action == "catalog:action:create"`, or when `slug`, `input` and `entity` are all present:
+
+| Field | Used as |
+|---|---|
+| `notification.slug` | the operation |
+| `notification.input` | the operation's fields |
+| `notification.entity.bucket_name` | the bucket, required |
+| `notification.entity.region` | the region, required |
+
+A missing bucket or region is an error answer (`400`); there is no fallback lookup. A bucket or region
+in `input` is ignored. `delete-object` needs `S3_BROWSER_ALLOW_WRITES=1` here too. The answer is one
+JSON object on stdout; `{ "error": { "code", "message" } }` is a failure for the catalog.
+
 ## Legacy direct command
 
 Existing installs keep working: the worker still accepts
