@@ -32,21 +32,17 @@ describe("aws-s3-bucket catalog specification", () => {
       expect(action.execution).toBe("sync");
       expect(action.input).toEqual(serviceAction.parameters.schema);
       expect(action.output).toEqual(serviceAction.results.schema);
-      expect(action.permission).toBe(serviceAction.permission);
+      // Base catalog authorization only: no per-action permission keyword.
+      expect(action.permission).toBeUndefined();
     }
   });
 
-  test("grants cover every read action and name the delete permission only through its action", () => {
+  test("the org-wide grant covers the reads and never the delete", () => {
     const granted = new Set(
       specification.schema.authorization.entities.grants.flatMap((grant: { actions: string[] }) => grant.actions),
     );
     for (const slug of slugs) {
-      const action = specification.schema.actions[slug];
-      if (action.permission) {
-        expect(granted.has(`action:${slug}`)).toBe(false);
-      } else {
-        expect(granted.has(`action:${slug}`)).toBe(true);
-      }
+      expect(granted.has(`action:${slug}`)).toBe(slug !== "delete-object");
     }
   });
 

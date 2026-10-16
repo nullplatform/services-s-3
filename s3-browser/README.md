@@ -110,7 +110,7 @@ Files in [`catalog/`](catalog/):
 - [`aws-s3-bucket.specification.json`](catalog/aws-s3-bucket.specification.json): the entity
   specification. `bucket_name` is the primary key, `region` is indexed, `nrn` marks the NRN. The four
   actions are `sync`, with `input`/`output` copied from `actions/*.json` (a test keeps them equal).
-  Reads are granted to everyone; `delete-object` has `permission: custom:s3:objectdelete`.
+  Reads are granted to everyone; `delete-object` is granted to nobody until a grant names `action:delete-object`.
 - [`executors.json`](catalog/executors.json): four bodies, each `POST /catalog/specifications/{id}/executors`
   (`transport: notification`, `timeout_ms: 15000`).
 - [`channel.example.json`](catalog/channel.example.json): agent channel on `source: catalog`,
@@ -119,8 +119,11 @@ Files in [`catalog/`](catalog/):
 The delete is granted by whoever installs the specification, for example on top of the grants in it:
 
 ```json
-{ "principals": [{ "type": "role", "id": 9 }], "actions": ["custom:s3:objectdelete"] }
+{ "principals": [{ "type": "role", "id": 9 }], "actions": ["action:delete-object"] }
 ```
+
+Every catalog action runs behind the instance's `entity:write` gate (the catalog's base rule for
+custom actions); the spec's grants narrow it per action.
 
 Envelope (`NP_ACTION_CONTEXT = {"notification": <context>}`), detected when
 `notification.action == "catalog:action:create"`, or when `slug`, `input` and `entity` are all present:

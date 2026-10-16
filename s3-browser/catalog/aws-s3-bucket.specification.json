@@ -258,7 +258,6 @@
       "delete-object": {
         "name": "Delete object",
         "execution": "sync",
-        "permission": "custom:s3:objectdelete",
         "input": {
           "type": "object",
           "$schema": "http://json-schema.org/draft-07/schema#",
