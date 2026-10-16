@@ -4,11 +4,13 @@ The worker behind the **S3 browser** UI plugin (`frontend-ui-plugins/examples/s3
 It runs as the executor of four **sync service actions** on the `aws-s3-bucket` service
 specification. The dashboard never talks to a backend of ours: the plugin creates a service
 action, the platform hands it to this worker through an agent channel, and the worker reads S3
-with its own identity.
+with its own identity. The action specifications declare `"execution": "sync"`: the create
+request is held until this worker answers, and the response is the finished action. The caller
+sends no header and makes no choice.
 
 ```
-plugin ── POST /service/:id/action  {slug, parameters}  + X-Mode: sync ──▶ services API
-services API ── service:action:create notification (agent channel) ──▶ agent ──▶ this worker ──▶ S3
+plugin ── POST /service/:id/action  {slug, parameters} ──▶ services API (spec says execution: sync)
+services API ── service:action:create notification, execution_strategy: sync (agent channel) ──▶ agent ──▶ this worker ──▶ S3
 services API ◀── the worker's JSON, stored as the action `results` ◀────────────┘
 ```
 
@@ -18,7 +20,7 @@ create service actions (plus an optional grant for the delete, below), not `agen
 ## Actions
 
 Specifications live in [`actions/`](actions/), one JSON document per action
-(`custom`, `parallelize: true`, `parameters` and `results` JSON Schemas).
+(`custom`, `execution: sync`, `parallelize: true`, `parameters` and `results` JSON Schemas).
 
 | Action slug (`parameters`) | Results | Permission |
 |---|---|---|
@@ -29,7 +31,7 @@ Specifications live in [`actions/`](actions/), one JSON document per action
 
 ```bash
 curl -X POST "https://api.nullplatform.com/service/$SERVICE_ID/action" \
-  -H "Authorization: Bearer $NP_TOKEN" -H 'X-Mode: sync' -H 'content-type: application/json' \
+  -H "Authorization: Bearer $NP_TOKEN" -H 'content-type: application/json' \
   -d '{"slug":"list-objects","parameters":{"prefix":"logs/"}}'
 ```
 

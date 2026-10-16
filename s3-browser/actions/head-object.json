@@ -2,6 +2,7 @@
   "name": "Head object",
   "slug": "head-object",
   "type": "custom",
+  "execution": "sync",
   "parallelize": true,
   "parameters": {
     "schema": {

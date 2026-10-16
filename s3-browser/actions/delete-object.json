@@ -2,6 +2,7 @@
   "name": "Delete object",
   "slug": "delete-object",
   "type": "custom",
+  "execution": "sync",
   "parallelize": true,
   "permission": "custom:s3:objectdelete",
   "parameters": {

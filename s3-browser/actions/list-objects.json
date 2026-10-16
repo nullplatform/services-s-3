@@ -2,6 +2,7 @@
   "name": "List objects",
   "slug": "list-objects",
   "type": "custom",
+  "execution": "sync",
   "parallelize": true,
   "parameters": {
     "schema": {

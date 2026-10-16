@@ -2,6 +2,7 @@
   "name": "Presign download",
   "slug": "presign-download",
   "type": "custom",
+  "execution": "sync",
   "parallelize": true,
   "parameters": {
     "schema": {
