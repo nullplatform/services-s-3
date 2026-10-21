@@ -10,8 +10,15 @@ name: release
 # Recovery / backfill: dispatch with existing_tag to publish + finalize a tag
 # that already exists.
 #
+# Then publish-package publishes the service as a package visible to every
+# organization (aws-s3-bucket/publish), pinned to the image digest just pushed.
+#
 # Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
-# NP_ARTIFACT_NRN.
+# NP_ARTIFACT_NRN. publish-package additionally needs secrets
+# PACKAGE_NP_API_KEY (publisher organization key allowed to write specs and
+# packages) + AWS_ROLE_ARN_PUBLISH_STATE (OIDC role for the tofu state bucket)
+# and variables PUBLISH_TFSTATE_BUCKET + PUBLISH_TFSTATE_REGION; it is skipped
+# until PUBLISH_TFSTATE_BUCKET is set.
 on:
   push:
     branches:
@@ -34,6 +41,63 @@ jobs:
     with:
       image_name: services/s3
       existing_tag: ${{ inputs.existing_tag || '' }}
+      # Keeps the ?ref=vX.Y.Z install examples in the READMEs on the new tag.
+      # It rewrites EVERY ref=vX.Y.Z in every README.md, so READMEs must not
+      # pin other repositories (tofu-modules refs live in .tf files only).
+      update_readme_versions: true
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
+
+  publish-package:
+    name: Publish package
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.image_digest != '' && vars.PUBLISH_TFSTATE_BUCKET != '' }}
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: aws-s3-bucket/publish
+    env:
+      TAG: ${{ needs.release.outputs.tag_name }}
+      NULLPLATFORM_API_KEY: ${{ secrets.PACKAGE_NP_API_KEY }}
+      TF_VAR_publisher_nrn: ${{ vars.NP_ARTIFACT_NRN }}
+      TF_VAR_image_digest: ${{ needs.release.outputs.image_digest }}
+    steps:
+      # The package must publish the specs of the released tag, not of main.
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag_name }}
+
+      - name: Check version.txt matches the tag
+        run: |
+          VERSION="$(tr -d '[:space:]' < ../../version.txt)"
+          if [ "v${VERSION}" != "${TAG}" ]; then
+            echo "::error::version.txt is ${VERSION} but the release tag is ${TAG}"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (tofu state)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PUBLISH_STATE }}
+          aws-region: ${{ vars.PUBLISH_TFSTATE_REGION }}
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: 1.13.1
+
+      - name: Init
+        env:
+          TFSTATE_BUCKET: ${{ vars.PUBLISH_TFSTATE_BUCKET }}
+          TFSTATE_REGION: ${{ vars.PUBLISH_TFSTATE_REGION }}
+        run: >-
+          tofu init -input=false
+          -backend-config="bucket=${TFSTATE_BUCKET}"
+          -backend-config="key=services-s-3/aws-s3-bucket/publish.tfstate"
+          -backend-config="region=${TFSTATE_REGION}"
+          -backend-config="use_lockfile=true"
+
+      - name: Apply
+        run: tofu apply -input=false -auto-approve
