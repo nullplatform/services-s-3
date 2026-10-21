@@ -10,7 +10,8 @@
 # Organizations do not get a copy: they install this package with
 # ../installation, which consumes it read-only.
 #
-# Run only by .github/workflows/release.yml.
+# Run only by the release workflow, through actions-nullplatform's
+# publish-package (see release.yml).
 ################################################################################
 
 locals {
@@ -18,12 +19,17 @@ locals {
   version      = trimspace(file("${path.module}/../../version.txt"))
 }
 
-# A revision without a digest would float to whatever image is newest; refuse it.
-resource "terraform_data" "require_digest" {
+# A revision without a digest would float to whatever image is newest, and one
+# whose version is not the tag's would publish other specs under it: refuse both.
+resource "terraform_data" "release_guard" {
   lifecycle {
     precondition {
       condition     = !var.publish_package || var.image_digest != null
       error_message = "image_digest is required to publish a package revision (only the bootstrap apply with publish_package = false may omit it)."
+    }
+    precondition {
+      condition     = var.release_tag == null || var.release_tag == "v${local.version}"
+      error_message = "version.txt is ${local.version} but the release tag is ${coalesce(var.release_tag, "unset")}."
     }
   }
 }
