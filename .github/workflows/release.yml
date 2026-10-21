@@ -59,13 +59,12 @@ jobs:
         working-directory: aws-s3-bucket/publish
     env:
       TAG: ${{ needs.release.outputs.tag_name }}
-      NULLPLATFORM_API_KEY: ${{ secrets.PACKAGE_NP_API_KEY }}
-      TF_VAR_publisher_nrn: ${{ vars.NP_ARTIFACT_NRN }}
-      TF_VAR_image_digest: ${{ needs.release.outputs.image_digest }}
+    # Third-party actions are pinned by SHA (Dependabot keeps them current) and
+    # the publisher API key is scoped to the Apply step: no setup action sees it.
     steps:
       # The package must publish the specs of the released tag, not of main.
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.tag_name }}
 
@@ -78,13 +77,13 @@ jobs:
           fi
 
       - name: Configure AWS credentials (tofu state)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_PUBLISH_STATE }}
           aws-region: ${{ vars.PUBLISH_TFSTATE_REGION }}
 
       - name: Setup OpenTofu
-        uses: opentofu/setup-opentofu@v2
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: 1.13.1
 
@@ -100,4 +99,8 @@ jobs:
           -backend-config="use_lockfile=true"
 
       - name: Apply
+        env:
+          NULLPLATFORM_API_KEY: ${{ secrets.PACKAGE_NP_API_KEY }}
+          TF_VAR_publisher_nrn: ${{ vars.NP_ARTIFACT_NRN }}
+          TF_VAR_image_digest: ${{ needs.release.outputs.image_digest }}
         run: tofu apply -input=false -auto-approve
