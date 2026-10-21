@@ -3,6 +3,12 @@ variable "publisher_nrn" {
   type        = string
 }
 
+variable "release_tag" {
+  description = "Release tag being published (vX.Y.Z), set by the release workflow. The apply refuses to publish when version.txt does not match it."
+  type        = string
+  default     = null
+}
+
 variable "image_digest" {
   description = "Digest of the worker image this release pushed (sha256:<64 hex>). Pins the package revision to that exact image."
   type        = string
