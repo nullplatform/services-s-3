@@ -22,6 +22,8 @@ After the apply, add `module.s3_service.permissions_role_arn` to your AWS IAM pr
 
 **Upgrade**: move `ref` to a newer tag and apply. New services are born with the new version; existing services keep theirs until they are moved one by one.
 
+Use this module to keep receiving updates. Fork the repository only when you need to extend the service substantially; see [Global package or fork?](../../README.md#global-package-or-fork) for what a fork costs.
+
 ## Prerequisites
 
 - **Agent**: running in your cluster with `TAGS` matching `agent_tags_selectors`, and `public.ecr.aws/nullplatform/*` in `worker.allowedRegistries`.

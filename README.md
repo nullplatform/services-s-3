@@ -117,6 +117,17 @@ module "s3_service" {
 
 It creates the IAM role the service assumes, installs the package at `nrn` and creates the agent notification channel. Then add `module.s3_service.permissions_role_arn` to your AWS IAM provider with selector `s3`. To upgrade, move `ref` to a newer tag. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for prerequisites, inputs and outputs.
 
+### Global package or fork?
+
+**Use the global package.** It is the default, and the only way to keep receiving updates: every fix, new feature and security patch arrives as a new release, and you take it by moving `ref`. The specs, the code and how the service is installed stay maintained here. If something is missing or wrong, open an issue or a pull request in this repository, so every organization gets it.
+
+**Fork only when you need to extend the service substantially**: new actions or links, a different specification (attributes, validations), or workflows that behave differently. A fork has real costs:
+
+- **You become the publisher.** You build and register your own image, publish your own package in your organization, and maintain its specs, code and installation.
+- **Updates stop arriving.** Upstream fixes reach you only when you merge them into your fork yourself.
+- **There is no way back for existing services.** Services created from your fork's specification cannot be moved to the global one.
+- **Names must not collide.** Rename the package (`NP_PACKAGE_NAME` in the `Dockerfile`, `package_slug`), the service specification and the IAM role and selector, or your fork and the global package share one worker and one role.
+
 ## How the package is published
 
 Every release publishes a new revision of the package from this repository, in the same run that pushes the worker image ([`.github/workflows/release.yml`](./.github/workflows/release.yml)): the `publish-package` job applies [`aws-s3-bucket/publish`](./aws-s3-bucket/publish), which pins this tag's specs and the image by digest. `version.txt` is the package version; release-please bumps it.
