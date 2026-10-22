@@ -21,11 +21,14 @@ The service lives under [`aws-s3-bucket/`](./aws-s3-bucket) to keep the repo ope
 │   │   └── links/connect.json.tpl  # Link schema (access_level, path_prefix, credentials)
 │   ├── deployment/                 # OpenTofu module: S3 bucket + versioning + encryption
 │   ├── permissions/                # OpenTofu module: IAM user + access key + scoped policy (per link)
-│   ├── requirements/               # OpenTofu module: IAM policies the agent role needs
+│   │   └── requirements/aws/       # OpenTofu module: IAM role the agent assumes for this service
 │   ├── workflows/aws/              # Workflow YAMLs (create/update/delete/link/link-update/unlink)
 │   ├── scripts/aws/                # build_context, do_tofu, write_service_outputs, write_link_outputs, delete_tfstate_bucket
 │   ├── entrypoint/                 # entrypoint/service/link (agent entrypoint)
+│   ├── installation/               # OpenTofu module: install the service in your organization
+│   ├── publish/                    # OpenTofu stack: publishes the package (release workflow only)
 │   └── values.yaml                 # Static config (aws_profile for local dev)
+├── version.txt                     # Package version, bumped by release-please
 └── README.md
 ```
 
@@ -86,7 +89,7 @@ Only credentials are exposed at the link level — bucket identity (name / ARN /
 
 ### AWS IAM permissions (for the agent role)
 
-The agent executing this service needs the IAM policies defined in [`aws-s3-bucket/requirements/main.tf`](./aws-s3-bucket/requirements/main.tf):
+The agent executing this service assumes the IAM role defined in [`aws-s3-bucket/specs/requirements/aws/main.tf`](./aws-s3-bucket/specs/requirements/aws/main.tf) (the [installation module](#install-in-your-organization) creates it):
 
 - S3 bucket management (`s3:CreateBucket`, `s3:PutBucketVersioning`, etc.) over `*`
 - IAM user management (`iam:CreateUser`, `iam:CreateAccessKey`, `iam:PutUserPolicy`, etc.) over `arn:aws:iam::*:user/np-s3-*` (or `*` for simpler scope)
@@ -98,35 +101,74 @@ The agent executing this service needs the IAM policies defined in [`aws-s3-buck
 - AWS CLI
 - `jq`
 
-## How to register this service in nullplatform
+## Install in your organization
 
-Use the [`nullplatform/service_definition`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_definition) and [`nullplatform/service_definition_agent_association`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_definition_agent_association) modules. Example:
+The service is published once as the package `aws-s3-bucket`, visible to every organization. You do not copy its specs: you install the package and use it read-only. Add the [installation module](./aws-s3-bucket/installation) to your stack at a release tag:
 
 ```hcl
-module "service_definition_aws_s3_bucket" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v1.51.0"
-  nrn    = var.nrn
-
-  git_provider      = "github"
-  repository_org    = "nullplatform"
-  repository_name   = "services-s-3"
-  repository_branch = "main"
-  service_path      = "aws-s3-bucket"
-
-  service_name = "AWS S3 Bucket"
+terraform {
+  required_providers {
+    aws          = { source = "hashicorp/aws", version = ">= 5.0" }
+    nullplatform = { source = "nullplatform/nullplatform", version = ">= 0.0.109" }
+  }
 }
 
-module "service_definition_channel_association_aws_s3_bucket" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v1.51.0"
+# AWS credentials come from the environment (profile, SSO or role); nullplatform
+# from NULLPLATFORM_API_KEY, a key with package:create at the NRN.
+provider "aws" {
+  region = "us-east-1"
+}
+provider "nullplatform" {}
 
-  nrn                          = var.nrn
-  api_key                      = module.service_notification_api_key.api_key
-  tags_selectors               = var.tags_selectors
-  service_specification_slug   = module.service_definition_aws_s3_bucket.service_specification_slug
-  repository_service_spec_repo = "nullplatform/services-s-3"
-  service_path                 = "aws-s3-bucket"
+locals {
+  nrn = "organization=123:account=456"
+}
+
+# 1. Install the service: IAM role, installation of the global package, agent channel.
+module "s3_service" {
+  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.5"
+
+  nrn                  = local.nrn
+  cluster_name         = "my-cluster"            # names the role nullplatform_my-cluster_s3_role
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
+}
+
+# 2. Register the role in the NRN's AWS IAM provider, under the selector the
+#    service looks up ("s3"). One aws-iam-configuration per NRN and dimensions:
+#    if you already have one, add this entry to its list instead.
+resource "nullplatform_provider_config" "aws_iam" {
+  nrn  = local.nrn
+  type = "aws-iam-configuration"
+  attributes = jsonencode({
+    iam_role_arns = {
+      arns = [
+        { selector = "s3", arn = module.s3_service.permissions_role_arn },
+      ]
+    }
+  })
+}
+
+output "s3_installed_version" {
+  value = module.s3_service.installed_version
 }
 ```
+
+The module creates the IAM role the service assumes, installs the package at `nrn` and creates the agent notification channel. It does not write your AWS IAM provider, because that provider belongs to your stack and its list is shared with other services: step 2 registers the role there. To upgrade, move `ref` to a newer tag. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for prerequisites, inputs and outputs.
+
+### Global package or fork?
+
+**Use the global package.** It is the default, and the only way to keep receiving updates: every fix, new feature and security patch arrives as a new release, and you take it by moving `ref`. The specs, the code and how the service is installed stay maintained here. If something is missing or wrong, open an issue or a pull request in this repository, so every organization gets it.
+
+**Fork only when you need to extend the service substantially**: new actions or links, a different specification (attributes, validations), or workflows that behave differently. A fork has real costs:
+
+- **You become the publisher.** You build and register your own image, publish your own package in your organization, and maintain its specs, code and installation.
+- **Updates stop arriving.** Upstream fixes reach you only when you merge them into your fork yourself.
+- **There is no way back for existing services.** Services created from your fork's specification cannot be moved to the global one.
+- **Names must not collide.** Rename the package (`NP_PACKAGE_NAME` in the `Dockerfile`, `package_slug`), the service specification and the IAM role and selector, or your fork and the global package share one worker and one role.
+
+## How the package is published
+
+Every release publishes a new revision of the package from this repository, in the same run that pushes the worker image ([`.github/workflows/release.yml`](./.github/workflows/release.yml)): the `publish-package` job applies [`aws-s3-bucket/publish`](./aws-s3-bucket/publish), which pins this tag's specs and the image by digest. `version.txt` is the package version; release-please bumps it.
 
 ## Important considerations
 
