@@ -9,16 +9,54 @@ OpenTofu module that installs the `aws-s3-bucket` package in your organization. 
 ## Usage
 
 ```hcl
+terraform {
+  required_providers {
+    aws          = { source = "hashicorp/aws", version = ">= 5.0" }
+    nullplatform = { source = "nullplatform/nullplatform", version = ">= 0.0.109" }
+  }
+}
+
+# AWS credentials come from the environment (profile, SSO or role); nullplatform
+# from NULLPLATFORM_API_KEY, a key with package:create at the NRN.
+provider "aws" {
+  region = "us-east-1"
+}
+provider "nullplatform" {}
+
+locals {
+  nrn = "organization=123:account=456"
+}
+
+# 1. Install the service: IAM role, installation of the global package, agent channel.
 module "s3_service" {
   source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.5"
 
-  nrn                  = "organization=123:account=456"
-  cluster_name         = "my-cluster"
-  agent_tags_selectors = { cluster = "runtime" }
+  nrn                  = local.nrn
+  cluster_name         = "my-cluster"            # names the role nullplatform_my-cluster_s3_role
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
+}
+
+# 2. Register the role in the NRN's AWS IAM provider, under the selector the
+#    service looks up ("s3"). One aws-iam-configuration per NRN and dimensions:
+#    if you already have one, add this entry to its list instead.
+resource "nullplatform_provider_config" "aws_iam" {
+  nrn  = local.nrn
+  type = "aws-iam-configuration"
+  attributes = jsonencode({
+    iam_role_arns = {
+      arns = [
+        { selector = "s3", arn = module.s3_service.permissions_role_arn },
+      ]
+    }
+  })
+}
+
+output "s3_installed_version" {
+  value = module.s3_service.installed_version
 }
 ```
 
-After the apply, add `module.s3_service.permissions_role_arn` to your AWS IAM provider with selector `s3`. That provider belongs to your stack and its ARN list is shared with other services, so this module does not write it.
+Step 2 is yours, not the module's: the service assumes the role it finds under selector `s3` in the NRN's `aws-iam-configuration` provider, and that provider belongs to your stack and is shared with other services.
 
 **Upgrade**: move `ref` to a newer tag and apply. New services are born with the new version; existing services keep theirs until they are moved one by one.
 
