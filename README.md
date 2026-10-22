@@ -106,16 +106,54 @@ The agent executing this service assumes the IAM role defined in [`aws-s3-bucket
 The service is published once as the package `aws-s3-bucket`, visible to every organization. You do not copy its specs: you install the package and use it read-only. Add the [installation module](./aws-s3-bucket/installation) to your stack at a release tag:
 
 ```hcl
+terraform {
+  required_providers {
+    aws          = { source = "hashicorp/aws", version = ">= 5.0" }
+    nullplatform = { source = "nullplatform/nullplatform", version = ">= 0.0.109" }
+  }
+}
+
+# AWS credentials come from the environment (profile, SSO or role); nullplatform
+# from NULLPLATFORM_API_KEY, a key with package:create at the NRN.
+provider "aws" {
+  region = "us-east-1"
+}
+provider "nullplatform" {}
+
+locals {
+  nrn = "organization=123:account=456"
+}
+
+# 1. Install the service: IAM role, installation of the global package, agent channel.
 module "s3_service" {
   source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.5"
 
-  nrn                  = "organization=123:account=456"
-  cluster_name         = "my-cluster"
-  agent_tags_selectors = { cluster = "runtime" }
+  nrn                  = local.nrn
+  cluster_name         = "my-cluster"            # names the role nullplatform_my-cluster_s3_role
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
+}
+
+# 2. Register the role in the NRN's AWS IAM provider, under the selector the
+#    service looks up ("s3"). One aws-iam-configuration per NRN and dimensions:
+#    if you already have one, add this entry to its list instead.
+resource "nullplatform_provider_config" "aws_iam" {
+  nrn  = local.nrn
+  type = "aws-iam-configuration"
+  attributes = jsonencode({
+    iam_role_arns = {
+      arns = [
+        { selector = "s3", arn = module.s3_service.permissions_role_arn },
+      ]
+    }
+  })
+}
+
+output "s3_installed_version" {
+  value = module.s3_service.installed_version
 }
 ```
 
-It creates the IAM role the service assumes, installs the package at `nrn` and creates the agent notification channel. Then add `module.s3_service.permissions_role_arn` to your AWS IAM provider with selector `s3`. To upgrade, move `ref` to a newer tag. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for prerequisites, inputs and outputs.
+The module creates the IAM role the service assumes, installs the package at `nrn` and creates the agent notification channel. It does not write your AWS IAM provider, because that provider belongs to your stack and its list is shared with other services: step 2 registers the role there. To upgrade, move `ref` to a newer tag. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for prerequisites, inputs and outputs.
 
 ### Global package or fork?
 
