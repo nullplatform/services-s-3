@@ -14,6 +14,8 @@ export interface HandlerConfig {
   specifications: string[];
   /** `delete-object` only when true. */
   allowWrites: boolean;
+  /** Link mode: how many verified execution ids to remember, and for how long (replay guard). */
+  replay?: { max?: number; ttlMs?: number; now?: () => number };
 }
 
 export type Handler = (command: Command) => Promise<unknown>;
@@ -37,15 +39,47 @@ export const APPLICATION_NRN = /^organization=\d+:account=\d+:namespace=\d+:appl
 
 const notVerified = (why: string) => new CommandError(`execution not verified: ${why}`, 403, "EXECUTION_NOT_VERIFIED");
 
-/** The application NRN of a catalog entity read, when it is one and agrees with its application_id. */
+/**
+ * The application NRN of a catalog entity read: only its top-level `nrn` (the one the catalog
+ * authorizes on), exactly an application NRN whose `application=<id>` is `data.application_id`.
+ */
 export function entityApplicationNrn(entity: CatalogEntity): string | undefined {
   const data = entity.data && typeof entity.data === "object" ? entity.data : {};
-  const nrn = typeof entity.nrn === "string" && entity.nrn ? entity.nrn : data.nrn;
-  const applicationId = data.application_id ?? entity.application_id;
-  if (typeof nrn !== "string") return undefined;
+  const nrn = entity.nrn;
+  const applicationId = data.application_id;
+  if (typeof nrn !== "string" || !nrn) return undefined;
   const match = APPLICATION_NRN.exec(nrn);
   if (!match || (typeof applicationId !== "string" && typeof applicationId !== "number") || match[1] !== String(applicationId)) return undefined;
   return nrn;
+}
+
+/**
+ * Remembers execution ids already run in this process, so a replayed envelope is refused. Bounded
+ * (oldest first out) and time-limited; it only helps while the worker process lives.
+ */
+export function createReplayGuard({ max = 10_000, ttlMs = 600_000, now = Date.now }: { max?: number; ttlMs?: number; now?: () => number } = {}) {
+  const seen = new Map<string, number>();
+  const prune = () => {
+    const current = now();
+    for (const [id, expiresAt] of seen) {
+      if (expiresAt > current && seen.size <= max) break;
+      seen.delete(id);
+    }
+  };
+  return {
+    has(id: string): boolean {
+      prune();
+      return seen.has(id);
+    },
+    claim(id: string): void {
+      seen.delete(id);
+      seen.set(id, now() + ttlMs);
+      prune();
+    },
+    get size() {
+      return seen.size;
+    },
+  };
 }
 
 /**
@@ -77,7 +111,8 @@ export async function verifyExecution(platform: Platform, command: Command): Pro
   if (verified.link!.link_id !== linkId) throw notVerified(`execution ${executionId} is for another link`);
   if (typeof record.entity_id !== "string" || !record.entity_id) throw notVerified(`execution ${executionId} names no entity`);
   const entity = await read(() => platform.getEntity(slug, record.entity_id!), `entity ${record.entity_id}`);
-  if (record.entity_specification_id && entity.entity_specification_id && record.entity_specification_id !== entity.entity_specification_id) throw notVerified(`entity ${record.entity_id} is of another specification`);
+  // Fail closed: both sides must name the specification, and the same one.
+  if (!record.entity_specification_id || !entity.entity_specification_id || record.entity_specification_id !== entity.entity_specification_id) throw notVerified(`entity ${record.entity_id} is not known to be of the execution's specification`);
   const entityNrn = entityApplicationNrn(entity);
   if (!entityNrn) throw notVerified(`entity ${record.entity_id} is not at an application NRN matching its application_id`);
   verified.link = { link_id: linkId, entity_nrn: entityNrn, execution_id: executionId, specification_slug: slug };
@@ -150,12 +185,18 @@ async function runOnTarget(store: ObjectStore, command: Command, target: Target)
 }
 
 export function createHandler({ platform, store, config }: { platform: Platform; store: ObjectStore; config: HandlerConfig }): Handler {
+  const replay = createReplayGuard(config.replay);
   return async (command) => {
     // Gate writes before any lookup: a refused delete costs no platform call.
     if (command.action === "delete-object" && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
     if (command.link) {
       // Never act on the envelope alone: everything below uses the catalog-verified command.
+      const executionId = command.link.execution_id;
+      if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
       const verified = await verifyExecution(platform, command);
+      // One run per execution id: claimed before any link or S3 work.
+      if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
+      replay.claim(executionId);
       const secrets: string[] = [];
       try {
         const scope = await resolveLink(platform, verified, config, secrets);

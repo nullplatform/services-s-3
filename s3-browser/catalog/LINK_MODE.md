@@ -76,10 +76,10 @@ Worker codes in link mode (CODE → status):
    agent's key and no caching, `GET /catalog/actions/{slug}/executions/{notification.id}` and requires: the record exists,
    `status === "pending"`, `record.action === notification.slug`, `record.input.link_id === input.link_id`. **All operation
    fields are taken from `record.input`**, never from the envelope. Then it reads `GET /catalog/instances/{slug}/{record.entity_id}`
-   and takes the entity NRN from it (top-level `nrn`, else `data.nrn`), which must match the application-NRN pattern with
-   `application=<data.application_id>`. `notification.entity_nrn` is ignored. Any failure → `EXECUTION_NOT_VERIFIED` (403).
-   Residual risk: a caller who learns the id of another user's execution while it is still pending (≤ the executor timeout)
-   could replay it through `agent_command` and see its result.
+   and requires `record.entity_specification_id` and `entity.entity_specification_id` to both be present and equal (fail
+   closed). The entity NRN is **only** the entity's top-level `nrn` (never `data.nrn`); it must match the application-NRN
+   pattern and its `application=<id>` must equal `data.application_id`. `notification.entity_nrn` is ignored. Each execution
+   id runs at most once per worker process (see Residual risks). Any failure → `EXECUTION_NOT_VERIFIED` (403).
 2. Read the link with the agent's API key: `GET /link/{link_id}` including secret attributes
    (query `include_secret_attributes=true`; needs `service:link:read-secrets` on the agent key — **unverified name, confirm in e2e**).
    Never cache link reads beyond the request; never log or return the keys.
@@ -107,6 +107,18 @@ Worker codes in link mode (CODE → status):
   plugin's message codes); other failures → platform errors.
 - Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null,
   `delete-object` returns `{ key }`).
+
+## Residual risks
+
+- **Replay of a pending execution.** A caller holding `agent:run_command` who learns the id of someone else's execution
+  while it is still `pending` can send a matching envelope through `POST /controlplane/agent_command` and receive the
+  result. The worker remembers execution ids it already ran (in memory, last 10 000, ~10 minutes) and refuses a second run
+  with `EXECUTION_NOT_VERIFIED`. That only helps while the worker process lives (a fresh process per command remembers
+  nothing) and does not stop a replay that wins the race against the legitimate run. A true one-time claim needs a
+  catalog status transition the worker could make atomically (e.g. pending → running), which catalog-entities-api does
+  not offer today. The window is bounded by the execution's pending time (≤ the executor's `timeout_ms`) and to callers
+  with `agent:run_command`.
+- **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design); the secret never leaves the worker.
 
 ## Verified ordering
 

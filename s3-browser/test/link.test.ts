@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
-import { createHandler, linkOwnedBy, normalisePathPrefix, runCommand } from "../src/handler";
+import { createHandler, createReplayGuard, linkOwnedBy, normalisePathPrefix, runCommand } from "../src/handler";
 import { type CatalogEntity, type CatalogExecution, createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
 import { CommandError, parseCommand } from "../src/protocol";
 import { createS3, defaultClientFactory, type ObjectStore, type Target, totalFromContentRange } from "../src/s3";
@@ -337,28 +337,71 @@ describe("link mode: the request is verified against the catalog", () => {
   });
 
   test("the entity must sit exactly at an application matching its application_id", async () => {
-    const at = (id: string, entity: CatalogEntity) => (entities.set(id, entity), { entity_id: id });
+    const at = (id: string, entity: Omit<CatalogEntity, "id" | "entity_specification_id">) => (entities.set(id, { id, entity_specification_id: "spec-cat", ...entity }), { entity_id: id });
     // A namespace-level entity would make every link of the namespace pass the ownership prefix.
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-ns", { id: "ent-ns", nrn: "organization=1:account=2:namespace=3", data: { application_id: "3", nrn: "organization=1:account=2:namespace=3" } })), { "lnk-1": baseLink({ entity_nrn: APP_NRN }) });
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-mismatch", { id: "ent-mismatch", nrn: APP_NRN, data: { application_id: "5", nrn: APP_NRN } })));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-scope", { id: "ent-scope", nrn: `${APP_NRN}:scope=1`, data: { application_id: "4" } })));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-no-id", { id: "ent-no-id", nrn: APP_NRN, data: {} })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-ns", { nrn: "organization=1:account=2:namespace=3", data: { application_id: "3", nrn: "organization=1:account=2:namespace=3" } })));
+    // application_id and the NRN's application segment disagree.
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-mismatch", { nrn: APP_NRN, data: { application_id: "5", nrn: APP_NRN } })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-scope", { nrn: `${APP_NRN}:scope=1`, data: { application_id: "4" } })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-no-id", { nrn: APP_NRN, data: {} })));
+    // application_id only counts from data.
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-top-id", { nrn: APP_NRN, application_id: "4", data: {} })));
+    // Only the top-level NRN counts: one under data alone is not enough.
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-data-nrn", { data: { application_id: "4", nrn: APP_NRN } })));
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-missing" }));
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: undefined }));
-    // The NRN may only be under `data`.
+    // A numeric application_id is fine.
     const { handler } = setup();
-    const dataOnly = linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-data", { id: "ent-data", data: { application_id: 4, nrn: APP_NRN } }));
-    expect(parse(await runCommand(dataOnly, handler)).bucket).toBe("link-bucket");
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-num", { nrn: APP_NRN, data: { application_id: 4 } })), handler)).bucket).toBe("link-bucket");
   });
 
-  test("the catalog is read with the configured specification slug, every time", async () => {
+  test("the specification check fails closed", async () => {
+    entities.set("ent-other-spec", { ...APP_ENTITY, id: "ent-other-spec", entity_specification_id: "spec-other" });
+    entities.set("ent-no-spec", { ...APP_ENTITY, id: "ent-no-spec", entity_specification_id: undefined });
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-other-spec" }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-no-spec" }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_specification_id: undefined }));
+  });
+
+  test("an execution id runs once per worker process", async () => {
+    catalogReads.length = 0;
+    const { handler, calls } = setup();
+    const payload = linkEnvelope("list-objects", { link_id: "lnk-1" });
+    expect(parse(await runCommand(payload, handler)).bucket).toBe("link-bucket");
+    const replayed = await runCommand(payload, handler);
+    expect(parse(replayed).error).toMatchObject({ status: 403, code: "EXECUTION_NOT_VERIFIED" });
+    expect(calls).toHaveLength(1);
+    // The replay is refused before the catalog is read again.
+    const id = JSON.parse(payload).notification.id;
+    expect(catalogReads).toEqual([`execution s3_browser ${id}`, "entity s3_browser ent-4"]);
+    // A refused attempt does not burn the id: a forged envelope first, the real run after it.
+    const forgedFirst = linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { status: "success" });
+    expect(parse(await runCommand(forgedFirst, handler)).error.code).toBe("EXECUTION_NOT_VERIFIED");
+    executions.set(JSON.parse(forgedFirst).notification.id, { ...executions.get(JSON.parse(forgedFirst).notification.id)!, status: "pending" });
+    expect(parse(await runCommand(forgedFirst, handler)).bucket).toBe("link-bucket");
+  });
+
+  test("the replay guard is bounded and expires", () => {
+    let clock = 0;
+    const guard = createReplayGuard({ max: 3, ttlMs: 100, now: () => clock });
+    for (const id of ["a", "b", "c", "d"]) guard.claim(id);
+    expect(guard.size).toBe(3);
+    expect(guard.has("a")).toBe(false);
+    expect(guard.has("d")).toBe(true);
+    clock = 101;
+    expect(guard.has("d")).toBe(false);
+    expect(guard.size).toBe(0);
+  });
+
+  test("the catalog is read with the configured specification slug, for every execution", async () => {
     catalogReads.length = 0;
     const { handler } = setup();
-    const payload = linkEnvelope("list-objects", { link_id: "lnk-1" });
-    await runCommand(payload, handler);
-    await runCommand(payload, handler);
-    const id = JSON.parse(payload).notification.id;
-    expect(catalogReads).toEqual([`execution s3_browser ${id}`, "entity s3_browser ent-4", `execution s3_browser ${id}`, "entity s3_browser ent-4"]);
+    const first = linkEnvelope("list-objects", { link_id: "lnk-1" });
+    const second = linkEnvelope("list-objects", { link_id: "lnk-1" });
+    await runCommand(first, handler);
+    await runCommand(second, handler);
+    const ids = [first, second].map((payload) => JSON.parse(payload).notification.id);
+    expect(catalogReads).toEqual([`execution s3_browser ${ids[0]}`, "entity s3_browser ent-4", `execution s3_browser ${ids[1]}`, "entity s3_browser ent-4"]);
   });
 });
 
