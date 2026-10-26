@@ -5,20 +5,20 @@ output "permissions_role_arn" {
 
 output "installation_id" {
   description = "Id of the package installation."
-  value       = nullplatform_package_installation.this.id
+  value       = module.package.installation_id
 }
 
 output "installed_version" {
   description = "Version new services are born with."
-  value       = nullplatform_package_installation.this.default_version
+  value       = module.package.installed_version
 }
 
 output "missing_optional_requirements" {
   description = "Optional providers the package can use that are not configured at nrn or above it."
-  value       = nullplatform_package_installation.this.missing_optional_requirements
+  value       = module.package.missing_optional_requirements
 }
 
 output "notification_channel_id" {
   description = "Id of the agent notification channel."
-  value       = module.agent_channel.id
+  value       = module.package.notification_channel_id
 }

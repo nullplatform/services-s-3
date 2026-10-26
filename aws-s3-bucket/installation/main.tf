@@ -12,9 +12,9 @@
 #
 # Creates, in the caller's accounts:
 #   1. the IAM permissions role the service's workflows assume (AWS);
-#   2. the installation of the package at var.nrn (nullplatform);
-#   3. the agent notification channel routing the service's actions to the
-#      package worker (nullplatform).
+#   2. the installation of the package at var.nrn and the agent notification
+#      channel routing the service's actions to the package worker
+#      (nullplatform, tofu-modules' service_package_installation).
 #
 # The role ARN is an output: add it to your AWS IAM provider with selector "s3".
 # That provider belongs to your own stack and its ARN list is shared with other
@@ -39,34 +39,14 @@ module "iam" {
   iam_resource_tags_json     = var.iam_resource_tags
 }
 
-# 2. The package, found by where it is visible (it is owned by the publisher
-#    organization, not yours), installed at the version of this module's tag.
-data "nullplatform_package" "this" {
-  visible_at = var.nrn
-  slug       = local.package_slug
-  version    = local.version
-}
+# 2. The package, installed at the version of this module's tag, and its agent
+#    channel.
+module "package" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.6.0"
 
-resource "nullplatform_package_installation" "this" {
-  nrn                 = var.nrn
-  package_id          = data.nullplatform_package.this.id
-  default_revision_id = data.nullplatform_package.this.revision_id
-  visible_to          = var.visible_to
-}
-
-# 3. Agent channel: package-exec to the package worker, filtered to this
-#    service's specification.
-module "agent_channel" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v9.4.0"
-
-  nrn                        = var.nrn
-  description                = "aws-s3-bucket package worker"
-  tags_selectors             = var.agent_tags_selectors
-  channel_sources            = ["service", "telemetry"]
-  service_specification_slug = local.package_slug
-  worker_orchestrator        = true
-  package_slug               = local.package_slug
-
-  # The channel is useless until the specification is reachable at var.nrn.
-  depends_on = [nullplatform_package_installation.this]
+  nrn                  = var.nrn
+  package_slug         = local.package_slug
+  package_version      = local.version
+  visible_to           = var.visible_to
+  agent_tags_selectors = var.agent_tags_selectors
 }

@@ -12,7 +12,7 @@ OpenTofu module that installs the `aws-s3-bucket` package in your organization. 
 terraform {
   required_providers {
     aws          = { source = "hashicorp/aws", version = ">= 5.0" }
-    nullplatform = { source = "nullplatform/nullplatform", version = ">= 0.0.109" }
+    nullplatform = { source = "nullplatform/nullplatform", version = ">= 0.0.110" }
   }
 }
 
@@ -29,7 +29,7 @@ locals {
 
 # 1. Install the service: IAM role, installation of the global package, agent channel.
 module "s3_service" {
-  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.5"
+  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.6"
 
   nrn                  = local.nrn
   cluster_name         = "my-cluster"            # names the role nullplatform_my-cluster_s3_role

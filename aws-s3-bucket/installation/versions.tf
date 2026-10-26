@@ -4,9 +4,9 @@ terraform {
   required_providers {
     nullplatform = {
       source = "nullplatform/nullplatform"
-      # nullplatform_package_installation and data.nullplatform_package.visible_at
-      # ship in the first provider release after 0.0.108.
-      version = ">= 0.0.109"
+      # nullplatform_package_installation, data.nullplatform_package.visible_at
+      # and .components: the first provider release after 0.0.109.
+      version = ">= 0.0.110"
     }
     aws = {
       source  = "hashicorp/aws"
