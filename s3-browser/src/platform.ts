@@ -19,6 +19,15 @@ export interface Service {
   attributes?: Record<string, unknown>;
 }
 
+/** A service link; in link mode its attributes carry the IAM keys S3 is opened with. */
+export interface Link {
+  id: string | number;
+  status?: string;
+  service_id?: string | number;
+  entity_nrn?: string;
+  attributes?: Record<string, unknown>;
+}
+
 export interface Specification {
   id: string;
   slug?: string;
@@ -28,18 +37,24 @@ export interface Specification {
 export interface Platform {
   getService(id: string): Promise<Service>;
   getSpecification(id: string): Promise<Specification>;
+  /** Reads a link including its secret attributes. Never cached. */
+  getLink(id: string): Promise<Link>;
 }
 
 interface Options {
   apiUrl?: string;
   apiKey?: string;
+  /** Query string that makes `GET /link/{id}` return secret attributes (S3_BROWSER_LINK_SECRETS_QUERY). */
+  linkSecretsQuery?: string;
   fetchImpl?: typeof fetch;
   cacheTtlMs?: number;
   specificationTtlMs?: number;
   now?: () => number;
 }
 
-export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey, fetchImpl = fetch, cacheTtlMs = 60_000, specificationTtlMs = 3_600_000, now = Date.now }: Options): Platform {
+export const DEFAULT_LINK_SECRETS_QUERY = "include_secret_attributes=true";
+
+export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey, linkSecretsQuery = DEFAULT_LINK_SECRETS_QUERY, fetchImpl = fetch, cacheTtlMs = 60_000, specificationTtlMs = 3_600_000, now = Date.now }: Options): Platform {
   const base = apiUrl.replace(/\/$/, "");
   let session: { token: string; expiresAt: number } | null = null;
   const cache = new Map<string, { value: unknown; expiresAt: number }>();
@@ -68,9 +83,21 @@ export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey
     return value;
   }
 
+  /** A link read: never cached (its keys must not outlive the request), 404 is LINK_NOT_FOUND. */
+  async function getLink(id: string): Promise<Link> {
+    const path = `/link/${encodeURIComponent(id)}`;
+    const query = linkSecretsQuery.replace(/^\?/, "");
+    const response = await fetchImpl(`${base}${path}${query ? `?${query}` : ""}`, { headers: { authorization: `Bearer ${await token()}`, accept: "application/json" } });
+    if (response.status === 404) throw new PlatformError(`link ${id} not found`, 404, "LINK_NOT_FOUND");
+    if (response.status === 403) throw new PlatformError(`link ${id} is not visible to this worker (its API key may lack service:link:read-secrets)`, 403, "FORBIDDEN");
+    if (!response.ok) throw new PlatformError(`${path} answered HTTP ${response.status}`);
+    return (await response.json()) as Link;
+  }
+
   return {
     getService: (id) => get<Service>(`/service/${encodeURIComponent(id)}`, cacheTtlMs),
     getSpecification: (id) => get<Specification>(`/service_specification/${encodeURIComponent(id)}`, specificationTtlMs),
+    getLink,
   };
 }
 

@@ -2,12 +2,15 @@
  * s3-browser: the worker behind the S3 browser UI plugin. The dashboard calls
  * `POST /controlplane/agent_command` (type package-exec, package s3-browser); the agent spawns
  * this image and hands the command over gRPC; the worker resolves the bucket from the
- * nullplatform service and reads S3 with its own identity. Nothing is exposed inbound.
+ * nullplatform service and reads S3 with its own identity — or, in link mode (catalog
+ * specification `s3_browser`), with the IAM keys of the application's link. Nothing is exposed
+ * inbound.
  */
 import pkg from "../package.json";
 import { createPlugin, registerManifest } from "@nullplatform/plugin";
 import { createHandler, runCommand } from "./handler";
-import { createPlatform } from "./platform";
+import { DEFAULT_LINK_SECRETS_QUERY, createPlatform } from "./platform";
+import { DEFAULT_LINK_SPECIFICATION } from "./protocol";
 import { createS3 } from "./s3";
 
 export const SLUG = "s3-browser";
@@ -43,20 +46,22 @@ const list = (value: string | undefined, fallback: string) =>
     .filter(Boolean);
 
 const handler = createHandler({
-  platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY }),
+  platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY, linkSecretsQuery: env.S3_BROWSER_LINK_SECRETS_QUERY ?? DEFAULT_LINK_SECRETS_QUERY }),
   store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900) }),
   config: {
     specifications: list(env.S3_BROWSER_SPECIFICATIONS, "aws-s3-bucket*"),
     allowWrites: env.S3_BROWSER_ALLOW_WRITES === "1",
   },
 });
+// Link mode: catalog executions of this specification open S3 with the link's own keys.
+const parseOptions = { linkSpecification: env.S3_BROWSER_LINK_SPECIFICATION || DEFAULT_LINK_SPECIFICATION };
 
 createPlugin({
   async execute(req) {
     // No streamed output: every emitted line becomes a partial update on the caller's
     // response, and the result must stay one JSON document on stdout.
     const started = Date.now();
-    const result = await runCommand(req.payload, handler);
+    const result = await runCommand(req.payload, handler, parseOptions);
     console.error(`[s3-browser] ${result.success ? "completed" : "failed"} in ${Date.now() - started} ms`);
     return result;
   },
