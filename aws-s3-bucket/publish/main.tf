@@ -35,7 +35,7 @@ resource "terraform_data" "release_guard" {
 }
 
 module "service_definition" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v9.4.0"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v9.6.0"
 
   nrn = var.publisher_nrn
 
@@ -53,6 +53,13 @@ module "service_definition" {
     slug       = local.package_slug
     version    = local.version
     visible_to = ["organization=*"]
+    # Checked at install, before anything is written: the region comes from
+    # the account's cloud provider; the IAM provider gets the role the
+    # installation creates, so it may not exist yet the first time.
+    requires_providers = [
+      { category = "cloud-providers" },
+      { category = "identity-access-control", optional = true },
+    ]
     artifacts = [{
       name   = "worker-image"
       type   = "oci_image"

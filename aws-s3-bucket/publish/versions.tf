@@ -7,8 +7,9 @@ terraform {
 
   required_providers {
     nullplatform = {
-      source  = "nullplatform/nullplatform"
-      version = ">= 0.0.108"
+      source = "nullplatform/nullplatform"
+      # nullplatform_package.requires_provider: the first release after 0.0.109.
+      version = ">= 0.0.110"
     }
   }
 }
