@@ -31,7 +31,7 @@ const store: ObjectStore = {
 const unused = async (): Promise<never> => {
   throw new Error("unused");
 };
-const platform: Platform = { getService: unused, getSpecification: unused, getLink: unused };
+const platform: Platform = { getService: unused, getSpecification: unused, getLink: unused, getExecution: unused, getEntity: unused };
 const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
 const inputs: Record<string, Record<string, unknown>> = {
   "list-objects": { prefix: "docs/", limit: 50, token: "t" },

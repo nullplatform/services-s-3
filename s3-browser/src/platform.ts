@@ -39,6 +39,31 @@ export interface Platform {
   getSpecification(id: string): Promise<Specification>;
   /** Reads a link including its secret attributes. Never cached. */
   getLink(id: string): Promise<Link>;
+  /** The catalog's record of an action execution (`GET /catalog/actions/{slug}/executions/{id}`). Never cached. */
+  getExecution(specificationSlug: string, id: string): Promise<CatalogExecution>;
+  /** A catalog entity (`GET /catalog/instances/{slug}/{id}`). Never cached. */
+  getEntity(specificationSlug: string, id: string): Promise<CatalogEntity>;
+}
+
+/** An action execution record as catalog-entities-api serializes it. */
+export interface CatalogExecution {
+  id?: string;
+  entity_id?: string;
+  entity_specification_id?: string;
+  action?: string;
+  status?: string;
+  input?: Record<string, unknown> | null;
+  actor_type?: string | null;
+  actor_id?: string | null;
+}
+
+/** A catalog entity read: the NRN is top-level, the properties under `data`. */
+export interface CatalogEntity {
+  id?: string;
+  entity_specification_id?: string;
+  nrn?: string;
+  data?: Record<string, unknown>;
+  [field: string]: unknown;
 }
 
 interface Options {
@@ -83,6 +108,15 @@ export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey
     return value;
   }
 
+  /** A read that is never cached: it decides whether this request is genuine. */
+  async function fresh<T>(path: string): Promise<T> {
+    const response = await fetchImpl(`${base}${path}`, { headers: { authorization: `Bearer ${await token()}`, accept: "application/json" } });
+    if (response.status === 404) throw new PlatformError(`${path} not found`, 404, "NOT_FOUND");
+    if (response.status === 403) throw new PlatformError(`${path} is not visible to this worker`, 403, "FORBIDDEN");
+    if (!response.ok) throw new PlatformError(`${path} answered HTTP ${response.status}`);
+    return (await response.json()) as T;
+  }
+
   /** A link read: never cached (its keys must not outlive the request), 404 is LINK_NOT_FOUND. */
   async function getLink(id: string): Promise<Link> {
     const path = `/link/${encodeURIComponent(id)}`;
@@ -98,6 +132,8 @@ export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey
     getService: (id) => get<Service>(`/service/${encodeURIComponent(id)}`, cacheTtlMs),
     getSpecification: (id) => get<Specification>(`/service_specification/${encodeURIComponent(id)}`, specificationTtlMs),
     getLink,
+    getExecution: (slug, id) => fresh<CatalogExecution>(`/catalog/actions/${encodeURIComponent(slug)}/executions/${encodeURIComponent(id)}`),
+    getEntity: (slug, id) => fresh<CatalogEntity>(`/catalog/instances/${encodeURIComponent(slug)}/${encodeURIComponent(id)}`),
   };
 }
 

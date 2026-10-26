@@ -12,11 +12,15 @@
       "application_id": {
         "type": "string",
         "primaryKey": true,
-        "autoGenerate": false
+        "autoGenerate": false,
+        "pattern": "^\\d+$",
+        "description": "The application id; must equal the application= segment of nrn (the worker checks it)"
       },
       "nrn": {
         "type": "string",
-        "nrn": true
+        "nrn": true,
+        "pattern": "^organization=\\d+:account=\\d+:namespace=\\d+:application=\\d+$",
+        "description": "The application NRN, exactly (never a namespace or above)"
       }
     },
     "actions": {

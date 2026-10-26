@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { createHandler, linkOwnedBy, normalisePathPrefix, runCommand } from "../src/handler";
-import { createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
+import { type CatalogEntity, type CatalogExecution, createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
 import { CommandError, parseCommand } from "../src/protocol";
 import { createS3, defaultClientFactory, type ObjectStore, type Target, totalFromContentRange } from "../src/s3";
 
@@ -24,9 +24,28 @@ const baseLink = (overrides: Partial<Link> & { attributes?: Record<string, unkno
   attributes: { access_level: "read-write", path_prefix: "", aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...(overrides.attributes ?? {}) },
 });
 
+// The catalog as the worker sees it: execution records and entities. `linkEnvelope` records a
+// pending execution for every envelope it builds (unless told not to), as the catalog would.
+const executions = new Map<string, CatalogExecution>();
+const APP_ENTITY: CatalogEntity = { id: "ent-4", entity_specification_id: "spec-cat", nrn: APP_NRN, data: { application_id: "4", nrn: APP_NRN } };
+const entities = new Map<string, CatalogEntity>([["ent-4", APP_ENTITY]]);
+const catalogReads: string[] = [];
+
 function fakePlatform(links: Record<string, Link>) {
   const seen: string[] = [];
   const platform: Platform = {
+    async getExecution(slug, id) {
+      catalogReads.push(`execution ${slug} ${id}`);
+      const found = executions.get(id);
+      if (!found) throw new PlatformError(`/catalog/actions/${slug}/executions/${id} not found`, 404, "NOT_FOUND");
+      return found;
+    },
+    async getEntity(slug, id) {
+      catalogReads.push(`entity ${slug} ${id}`);
+      const found = entities.get(id);
+      if (!found) throw new PlatformError(`/catalog/instances/${slug}/${id} not found`, 404, "NOT_FOUND");
+      return found;
+    },
     async getService(id) {
       seen.push(`service ${id}`);
       const found = [BUCKET_SERVICE, PENDING_SERVICE, DB_SERVICE].find((service) => service.id === id);
@@ -73,10 +92,16 @@ function recordingStore() {
   return { store, calls };
 }
 
-const linkEnvelope = (slug: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+let sequence = 0;
+const linkEnvelope = (slug: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}, record: Partial<CatalogExecution> | null = {}) => {
+  const id = `exec-${++sequence}`;
+  if (record) executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, actor_type: "user", actor_id: "u-1", ...record });
+  return linkPayload(id, slug, input, extra);
+};
+const linkPayload = (id: string, slug: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
     notification: {
-      id: "exec-1",
+      id,
       action: "catalog:action:create",
       slug,
       input,
@@ -182,10 +207,13 @@ describe("link mode: handler", () => {
   });
 
   test("masked keys are a worker failure, not a refusal", async () => {
-    const { handler } = setup({ "lnk-1": baseLink({ attributes: { aws_secret_access_key: "********" } }) });
-    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
-    expect(result.success).toBe(false);
-    expect(parse(result).error).toMatchObject({ status: 500, code: "PLATFORM" });
+    // The services API masks secrets as null when the read did not include them.
+    for (const masked of ["********", null]) {
+      const { handler } = setup({ "lnk-1": baseLink({ attributes: { aws_secret_access_key: masked } }) });
+      const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
+      expect(result.success).toBe(false);
+      expect(parse(result).error).toMatchObject({ status: 500, code: "PLATFORM" });
+    }
   });
 
   test("NOT_A_BUCKET and NO_BUCKET come from the link's service", async () => {
@@ -264,6 +292,76 @@ describe("link mode: handler", () => {
   });
 });
 
+describe("link mode: the request is verified against the catalog", () => {
+  const otherApp = "organization=1:account=2:namespace=3:application=5";
+  const refused = async (payload: string, links: Record<string, Link> = { "lnk-1": baseLink() }) => {
+    const { handler, seen, calls } = setup(links, true);
+    const result = await runCommand(payload, handler);
+    expect(result.success).toBe(true);
+    expect(parse(result).error).toMatchObject({ status: 403, code: "EXECUTION_NOT_VERIFIED" });
+    // Nothing about the link is read, nothing reaches S3.
+    expect(seen).toEqual([]);
+    expect(calls).toHaveLength(0);
+  };
+
+  test("a forged envelope with no execution behind it", async () => {
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, null));
+    // The agent_command shape (no notification.action) is verified the same way.
+    await refused(JSON.stringify({ notification: { id: "exec-forged", slug: "list-objects", input: { link_id: "lnk-1" }, specification: { slug: "s3_browser" }, entity: {}, entity_nrn: APP_NRN } }));
+  });
+
+  test("an execution that already finished", async () => {
+    for (const status of ["success", "failed"]) await refused(linkEnvelope("head-object", { link_id: "lnk-1", key: "a.txt" }, {}, { status }));
+  });
+
+  test("an execution of another operation or another link", async () => {
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { action: "delete-object", input: { link_id: "lnk-1", key: "a.txt" } }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: { link_id: "lnk-2" } }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: { link_id: "lnk-1", bucket: "evil" } }));
+  });
+
+  test("the operation's fields come from the catalog's record, not the envelope", async () => {
+    const { handler, calls } = setup();
+    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/" }, {}, { input: { link_id: "lnk-1", prefix: "recorded/" } }), handler);
+    expect(parse(result).prefix).toBe("recorded/");
+    expect(calls.at(-1)?.arg).toBe("recorded/");
+  });
+
+  test("the entity NRN comes from the catalog's entity, not the envelope", async () => {
+    // The envelope claims app 5, which owns the link; the catalog's entity is app 4: refused.
+    const forged = setup({ "lnk-1": baseLink({ entity_nrn: otherApp }) });
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity_nrn: otherApp }), forged.handler)).error).toMatchObject({ status: 403, code: "LINK_NOT_OWNED" });
+    // The envelope claims app 5, the link and the catalog's entity are app 4: allowed.
+    const honest = setup();
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity_nrn: otherApp }), honest.handler)).bucket).toBe("link-bucket");
+  });
+
+  test("the entity must sit exactly at an application matching its application_id", async () => {
+    const at = (id: string, entity: CatalogEntity) => (entities.set(id, entity), { entity_id: id });
+    // A namespace-level entity would make every link of the namespace pass the ownership prefix.
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-ns", { id: "ent-ns", nrn: "organization=1:account=2:namespace=3", data: { application_id: "3", nrn: "organization=1:account=2:namespace=3" } })), { "lnk-1": baseLink({ entity_nrn: APP_NRN }) });
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-mismatch", { id: "ent-mismatch", nrn: APP_NRN, data: { application_id: "5", nrn: APP_NRN } })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-scope", { id: "ent-scope", nrn: `${APP_NRN}:scope=1`, data: { application_id: "4" } })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-no-id", { id: "ent-no-id", nrn: APP_NRN, data: {} })));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-missing" }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: undefined }));
+    // The NRN may only be under `data`.
+    const { handler } = setup();
+    const dataOnly = linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-data", { id: "ent-data", data: { application_id: 4, nrn: APP_NRN } }));
+    expect(parse(await runCommand(dataOnly, handler)).bucket).toBe("link-bucket");
+  });
+
+  test("the catalog is read with the configured specification slug, every time", async () => {
+    catalogReads.length = 0;
+    const { handler } = setup();
+    const payload = linkEnvelope("list-objects", { link_id: "lnk-1" });
+    await runCommand(payload, handler);
+    await runCommand(payload, handler);
+    const id = JSON.parse(payload).notification.id;
+    expect(catalogReads).toEqual([`execution s3_browser ${id}`, "entity s3_browser ent-4", `execution s3_browser ${id}`, "entity s3_browser ent-4"]);
+  });
+});
+
 describe("link mode: platform", () => {
   test("reads the link with secrets, never from cache; 404 is LINK_NOT_FOUND", async () => {
     const seen: string[] = [];
@@ -282,6 +380,28 @@ describe("link mode: platform", () => {
     await renamed.getLink("lnk-1");
     expect(seen.at(-1)).toBe("GET https://api.test/link/lnk-1?show_secrets=1");
   });
+
+  test("reads the execution record and the entity from the catalog, never from cache", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push(`${init?.method ?? "GET"} ${String(url)}`);
+      if (String(url).endsWith("/token")) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      if (String(url).includes("missing")) return new Response("{}", { status: 404 });
+      return new Response(JSON.stringify({ id: "x" }), { status: 200 });
+    }) as typeof fetch;
+    const client = createPlatform({ apiUrl: "https://api.test", apiKey: "k", fetchImpl });
+    await client.getExecution("s3_browser", "exec-1");
+    await client.getExecution("s3_browser", "exec-1");
+    await client.getEntity("s3_browser", "ent-4");
+    await client.getEntity("s3_browser", "ent-4");
+    expect(seen.slice(1)).toEqual([
+      "GET https://api.test/catalog/actions/s3_browser/executions/exec-1",
+      "GET https://api.test/catalog/actions/s3_browser/executions/exec-1",
+      "GET https://api.test/catalog/instances/s3_browser/ent-4",
+      "GET https://api.test/catalog/instances/s3_browser/ent-4",
+    ]);
+    await expect(client.getExecution("s3_browser", "missing")).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 /** A fake S3 client: records the config it was built with and answers GetObject/HeadObject. */
@@ -299,23 +419,30 @@ function fakeClients(answer: (command: unknown) => unknown = () => ({})) {
 const body = (text: string | Uint8Array) => ({ transformToByteArray: async () => (typeof text === "string" ? new TextEncoder().encode(text) : text) });
 
 describe("link mode: S3 store", () => {
-  test("one client per region + access key id, never the default-chain client", async () => {
-    const { factory, built } = fakeClients(() => ({ Contents: [] }));
+  test("static credentials get a fresh client per request; the default-chain client is cached per region and never carries them", async () => {
+    const { factory, built, sent } = fakeClients(() => ({ Contents: [] }));
     const s3 = createS3({ clientFactory: factory });
     const linkA = { accessKeyId: "AKIA_A", secretAccessKey: "secret-a" };
     const linkB = { accessKeyId: "AKIA_B", secretAccessKey: "secret-b" };
-    await s3.list({ bucket: "b", region: "us-east-1" }, "");
-    await s3.list({ bucket: "b", region: "us-east-1", credentials: linkA }, "");
-    await s3.list({ bucket: "b", region: "us-east-1", credentials: linkA }, "");
-    await s3.list({ bucket: "b", region: "us-east-1", credentials: linkB }, "");
-    await s3.list({ bucket: "b", region: "eu-west-1", credentials: linkA }, "");
-    await s3.list({ bucket: "b", region: "us-east-1" }, "");
+    const calls: Target[] = [
+      { bucket: "b", region: "us-east-1" },
+      { bucket: "b", region: "us-east-1", credentials: linkA },
+      { bucket: "b", region: "us-east-1", credentials: linkA },
+      { bucket: "b", region: "us-east-1", credentials: linkB },
+      { bucket: "b", region: "eu-west-1", credentials: linkA },
+      { bucket: "b", region: "us-east-1" },
+    ];
+    for (const target of calls) await s3.list(target, "");
     expect(built.map((entry) => [entry.config.region, (entry.config.credentials as { accessKeyId?: string } | undefined)?.accessKeyId ?? null])).toEqual([
       ["us-east-1", null],
+      ["us-east-1", "AKIA_A"],
       ["us-east-1", "AKIA_A"],
       ["us-east-1", "AKIA_B"],
       ["eu-west-1", "AKIA_A"],
     ]);
+    // The sixth call (default chain again) reused the first client: 6 requests, 5 clients.
+    expect(sent).toHaveLength(6);
+    expect(new Set(built.map((entry) => entry.client)).size).toBe(5);
   });
 
   test("the real client factory keeps static credentials instead of the default chain", async () => {

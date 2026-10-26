@@ -36,8 +36,12 @@ export interface Command {
   key?: string;
   /** read-object only: how many bytes to read from the start of the object. */
   max_bytes?: number;
-  /** Link mode: the link to open S3 with and the entity NRN it must belong to (from the envelope, not the input). */
-  link?: { link_id: string; entity_nrn: string };
+  /**
+   * Link mode: the link to open S3 with, plus what the envelope claims about the execution.
+   * `entity_nrn` is informational only: the handler verifies the execution with the catalog and
+   * takes the operation, its fields and the entity NRN from there.
+   */
+  link?: { link_id: string; entity_nrn: string; execution_id: string; specification_slug: string };
   /** Present for the action envelope: what the platform sent about the service. Never caller-controlled. */
   /** Present for the catalog envelope: the catalog instance IS the bucket, no lookup. */
   catalog?: { bucket: string; region: string };
@@ -68,6 +72,7 @@ export const LINK_INPUT_FIELDS: Record<string, string[]> = {
   "delete-object": ["link_id", "key"],
 };
 const LINK_ID = /^[A-Za-z0-9-]{1,64}$/;
+const EXECUTION_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 export function parseCommand(raw: unknown, { linkSpecification = DEFAULT_LINK_SPECIFICATION }: ParseOptions = {}): Command {
   let value: unknown = raw;
@@ -95,26 +100,19 @@ export function parseCommand(raw: unknown, { linkSpecification = DEFAULT_LINK_SP
   let body: Record<string, unknown>;
   let service: Command["service"];
   let catalog: Command["catalog"];
-  let link: Command["link"];
-  let actions: readonly string[] = ACTIONS;
   if (isLink) {
-    // The entity carries no bucket: everything S3 comes from the link, resolved by the handler.
-    const input = notification!.input === undefined || notification!.input === null ? {} : record(notification!.input);
-    if (!input) throw new CommandError("input must be an object", 400);
-    const operation = notification!.slug;
-    actions = LINK_ACTIONS;
-    if (typeof operation !== "string" || !(LINK_ACTIONS as readonly string[]).includes(operation)) {
-      throw new CommandError(`unknown action ${JSON.stringify(operation ?? null)}; expected one of ${LINK_ACTIONS.join(", ")}`, 400, "UNKNOWN_ACTION");
-    }
-    const extra = Object.keys(input).filter((field) => !LINK_INPUT_FIELDS[operation].includes(field));
-    if (extra.length) throw new CommandError(`unexpected input field(s): ${extra.join(", ")}`, 400);
-    const linkId = input.link_id;
-    if (typeof linkId !== "string" || !LINK_ID.test(linkId)) throw new CommandError("link_id is required (1-64 letters, digits or dashes)", 400);
+    // The envelope only says WHICH execution this is; what to do comes from the catalog's own
+    // record of it (the handler re-reads it before anything else). Parsing the envelope's input
+    // here only rejects malformed requests early.
+    const executionId = notification!.id;
+    if (typeof executionId !== "string" || !EXECUTION_ID.test(executionId)) throw new CommandError("notification.id (the catalog execution) is required", 400);
+    const parsed = parseLinkOperation(notification!.slug, notification!.input);
     const entityNrn = notification!.entity_nrn;
     if (typeof entityNrn !== "string" || !entityNrn) throw new CommandError("entity_nrn is required", 400);
-    body = { ...input, action: operation, service_id: "link" };
-    link = { link_id: linkId, entity_nrn: entityNrn };
-  } else if (isCatalog) {
+    parsed.link = { ...parsed.link!, entity_nrn: entityNrn, execution_id: executionId, specification_slug: slug as string };
+    return parsed;
+  }
+  if (isCatalog) {
     // Operation = slug, fields = input; bucket and region come from the entity only.
     const { bucket, region } = { bucket: catalogEntity?.bucket_name, region: catalogEntity?.region };
     if (typeof bucket !== "string" || !bucket) throw new CommandError("entity.bucket_name is required", 400, "NO_BUCKET");
@@ -130,6 +128,14 @@ export function parseCommand(raw: unknown, { linkSpecification = DEFAULT_LINK_SP
     body = (outer.command && typeof outer.command === "object" ? outer.command : outer) as Record<string, unknown>;
   }
 
+  const command = buildCommand(body, ACTIONS);
+  if (catalog) command.catalog = catalog;
+  if (service) command.service = service;
+  return command;
+}
+
+/** The validation every mode shares, on the operation and its flattened fields. */
+function buildCommand(body: Record<string, unknown>, actions: readonly string[]): Command {
   const action = body.action;
   if (typeof action !== "string" || !actions.includes(action)) {
     throw new CommandError(`unknown action ${JSON.stringify(action ?? null)}; expected one of ${actions.join(", ")}`, 400, "UNKNOWN_ACTION");
@@ -156,8 +162,25 @@ export function parseCommand(raw: unknown, { linkSpecification = DEFAULT_LINK_SP
     if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > READ_MAX_BYTES) throw new CommandError(`max_bytes must be an integer between 1 and ${READ_MAX_BYTES}`, 400);
     command.max_bytes = maxBytes;
   }
-  if (link) command.link = link;
-  if (catalog) command.catalog = catalog;
-  if (service) command.service = service;
+  return command;
+}
+
+/**
+ * A link-mode operation and its input, as the s3_browser schemas define them: only the
+ * declared fields, `link_id` required. Used on the envelope and on the catalog's record.
+ */
+export function parseLinkOperation(operation: unknown, rawInput: unknown): Command {
+  const input = rawInput === undefined || rawInput === null ? {} : rawInput;
+  if (typeof input !== "object" || Array.isArray(input)) throw new CommandError("input must be an object", 400);
+  const fields = input as Record<string, unknown>;
+  if (typeof operation !== "string" || !(LINK_ACTIONS as readonly string[]).includes(operation)) {
+    throw new CommandError(`unknown action ${JSON.stringify(operation ?? null)}; expected one of ${LINK_ACTIONS.join(", ")}`, 400, "UNKNOWN_ACTION");
+  }
+  const extra = Object.keys(fields).filter((field) => !LINK_INPUT_FIELDS[operation].includes(field));
+  if (extra.length) throw new CommandError(`unexpected input field(s): ${extra.join(", ")}`, 400);
+  const linkId = fields.link_id;
+  if (typeof linkId !== "string" || !LINK_ID.test(linkId)) throw new CommandError("link_id is required (1-64 letters, digits or dashes)", 400);
+  const command = buildCommand({ ...fields, action: operation, service_id: "link" }, LINK_ACTIONS);
+  command.link = { link_id: linkId, entity_nrn: "", execution_id: "", specification_slug: "" };
   return command;
 }

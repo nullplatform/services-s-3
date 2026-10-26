@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import Ajv from "ajv";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHandler, runCommand } from "../src/handler";
+import { APPLICATION_NRN, createHandler, runCommand } from "../src/handler";
 import type { Platform } from "../src/platform";
 import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, parseCommand } from "../src/protocol";
 import type { ObjectStore } from "../src/s3";
@@ -20,7 +20,16 @@ const actions: Record<string, { name: string; execution: string; input: object; 
 const ajv = new Ajv({ strict: false });
 
 const APP_NRN = "organization=1:account=2:namespace=3:application=4";
+const executions = new Map<string, { id: string; entity_id: string; action: string; status: string; input: unknown }>();
 const platform: Platform = {
+  async getExecution(_slug, id) {
+    const found = executions.get(id);
+    if (!found) throw new Error(`execution ${id} not found`);
+    return found as never;
+  },
+  async getEntity(_slug, id) {
+    return { id, nrn: APP_NRN, data: { application_id: "4", nrn: APP_NRN } };
+  },
   async getService(id) {
     return { id, status: "active", specification_id: "spec-s3", attributes: { bucket_name: "link-bucket", bucket_region: "us-east-1" } };
   },
@@ -64,8 +73,14 @@ const minimal: Record<string, Record<string, unknown>> = {
   "presign-download": { link_id: "lnk-1", key: "a" },
   "delete-object": { link_id: "lnk-1", key: "a" },
 };
-const envelope = (slug: string, input: unknown) =>
-  JSON.stringify({ notification: { action: "catalog:action:create", slug, input, specification: { id: "s", slug: "s3_browser" }, entity: { application_id: "4", nrn: APP_NRN }, entity_nrn: APP_NRN, user: { id: null } } });
+let sequence = 0;
+const envelope = (slug: string, input: unknown) => {
+  const id = `exec-${++sequence}`;
+  executions.set(id, { id, entity_id: "ent-4", action: slug, status: "pending", input });
+  return payload(id, slug, input);
+};
+const payload = (id: string, slug: string, input: unknown) =>
+  JSON.stringify({ notification: { id, action: "catalog:action:create", slug, input, specification: { id: "s", slug: "s3_browser" }, entity: { application_id: "4", nrn: APP_NRN }, entity_nrn: APP_NRN, user: { id: null } } });
 const workerAccepts = (slug: string, input: unknown) => {
   try {
     parseCommand(envelope(slug, input));
@@ -79,8 +94,15 @@ const workerAccepts = (slug: string, input: unknown) => {
 describe("s3_browser catalog specification", () => {
   test("one entity per application: application_id is the key, nrn the NRN", () => {
     expect(specification.slug).toBe("s3_browser");
-    expect(specification.schema.properties.application_id).toEqual({ type: "string", primaryKey: true, autoGenerate: false });
-    expect(specification.schema.properties.nrn).toEqual({ type: "string", nrn: true });
+    expect(specification.schema.properties.application_id).toMatchObject({ type: "string", primaryKey: true, autoGenerate: false, pattern: "^\\d+$" });
+    expect(specification.schema.properties.nrn).toMatchObject({ type: "string", nrn: true });
+    // The same pattern the worker enforces on the entity it reads back from the catalog.
+    expect(new RegExp(specification.schema.properties.nrn.pattern).source).toBe(APPLICATION_NRN.source.replace("(\\d+)$", "\\d+$"));
+    const entity = ajv.compile({ type: "object", properties: specification.schema.properties, required: specification.schema.required });
+    expect(entity({ application_id: "4", nrn: APP_NRN })).toBe(true);
+    expect(entity({ application_id: "4", nrn: "organization=1:account=2:namespace=3" })).toBe(false);
+    expect(entity({ application_id: "4", nrn: `${APP_NRN}:scope=1` })).toBe(false);
+    expect(entity({ application_id: "app-4", nrn: APP_NRN })).toBe(false);
     expect(specification.schema.required.sort()).toEqual(["application_id", "nrn"]);
   });
 

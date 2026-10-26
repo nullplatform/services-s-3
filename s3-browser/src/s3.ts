@@ -1,8 +1,8 @@
 /**
  * S3 reads with the worker's own identity (IRSA in a cluster, the environment locally), or with
- * static credentials a target carries (link mode: the link's own IAM keys). One client per
- * region for the worker's identity, one per region and access key id for static credentials;
- * the two never share a client. One folder level per listing.
+ * static credentials a target carries (link mode: the link's own IAM keys). One cached client
+ * per region for the worker's identity; a fresh, uncached client per request for static
+ * credentials, so the two never share a client. One folder level per listing.
  */
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
@@ -138,13 +138,13 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactor
   const client = (target: Target) => {
     const region = target.region || defaultRegion || "us-east-1";
     const credentials = target.credentials;
-    // Separate namespaces: a static-credentials client can never be returned for the worker's
-    // identity, nor one link's client for another link's keys.
-    const cacheKey = credentials ? `static:${region}:${credentials.accessKeyId}` : `default:${region}`;
-    let existing = clients.get(cacheKey);
+    // Static credentials (a link's keys) get a fresh client per request, never cached: a client
+    // built with one link's keys can never serve another request, nor the worker's identity.
+    if (credentials) return clientFactory({ region, credentials: { accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey } });
+    let existing = clients.get(region);
     if (!existing) {
-      existing = clientFactory(credentials ? { region, credentials: { accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey } } : { region });
-      clients.set(cacheKey, existing);
+      existing = clientFactory({ region });
+      clients.set(region, existing);
     }
     return existing;
   };
@@ -187,14 +187,15 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactor
       }),
     read: (target, key, maxBytes) =>
       wrap(target, async () => {
+        const s3 = client(target);
         let response;
         try {
-          response = await client(target).send(new GetObjectCommand({ Bucket: target.bucket, Key: key, Range: `bytes=0-${maxBytes - 1}` }));
+          response = await s3.send(new GetObjectCommand({ Bucket: target.bucket, Key: key, Range: `bytes=0-${maxBytes - 1}` }));
         } catch (error) {
           // A range on an empty object is a 416: answer it as the empty text it is.
           const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
           if (e?.name !== "InvalidRange" && e?.$metadata?.httpStatusCode !== 416) throw error;
-          const head = await client(target).send(new HeadObjectCommand({ Bucket: target.bucket, Key: key }));
+          const head = await s3.send(new HeadObjectCommand({ Bucket: target.bucket, Key: key }));
           if ((head.ContentLength ?? 0) !== 0) throw error;
           return { key, text: "", truncated: false, content_type: head.ContentType, size: 0 };
         }
