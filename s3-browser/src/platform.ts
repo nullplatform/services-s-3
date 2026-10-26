@@ -55,14 +55,14 @@ export interface CatalogExecution {
   input?: Record<string, unknown> | null;
   actor_type?: string | null;
   actor_id?: string | null;
+  /** The NRN the catalog authorized the execution against (the entity's); null when it has none. */
+  entity_nrn?: string | null;
 }
 
-/** A catalog entity read: the NRN is top-level, the properties under `data`. */
+/** A catalog entity read: the formatted data, flat (`application_id`, `nrn`, timestamps). */
 export interface CatalogEntity {
-  id?: string;
-  entity_specification_id?: string;
   nrn?: string;
-  data?: Record<string, unknown>;
+  application_id?: string | number;
   [field: string]: unknown;
 }
 

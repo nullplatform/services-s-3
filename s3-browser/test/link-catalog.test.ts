@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { APPLICATION_NRN, createHandler, runCommand } from "../src/handler";
 import type { Platform } from "../src/platform";
-import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, parseCommand } from "../src/protocol";
+import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, parseLinkOperation } from "../src/protocol";
 import type { ObjectStore } from "../src/s3";
 
 // The s3_browser catalog documents against the worker that answers them (link mode): the
@@ -20,7 +20,7 @@ const actions: Record<string, { name: string; execution: string; input: object; 
 const ajv = new Ajv({ strict: false });
 
 const APP_NRN = "organization=1:account=2:namespace=3:application=4";
-const executions = new Map<string, { id: string; entity_id: string; entity_specification_id: string; action: string; status: string; input: unknown }>();
+const executions = new Map<string, { id: string; entity_id: string; entity_specification_id: string; action: string; status: string; input: unknown; entity_nrn: string }>();
 const platform: Platform = {
   async getExecution(_slug, id) {
     const found = executions.get(id);
@@ -28,7 +28,7 @@ const platform: Platform = {
     return found as never;
   },
   async getEntity(_slug, id) {
-    return { id, entity_specification_id: "spec-cat", nrn: APP_NRN, data: { application_id: "4", nrn: APP_NRN } };
+    return { application_id: id, nrn: APP_NRN };
   },
   async getService(id) {
     return { id, status: "active", specification_id: "spec-s3", attributes: { bucket_name: "link-bucket", bucket_region: "us-east-1" } };
@@ -76,14 +76,15 @@ const minimal: Record<string, Record<string, unknown>> = {
 let sequence = 0;
 const envelope = (slug: string, input: unknown) => {
   const id = `exec-${++sequence}`;
-  executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input });
+  executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, entity_nrn: APP_NRN });
   return payload(id, slug, input);
 };
 const payload = (id: string, slug: string, input: unknown) =>
   JSON.stringify({ notification: { id, action: "catalog:action:create", slug, input, specification: { id: "s", slug: "s3_browser" }, entity: { application_id: "4", nrn: APP_NRN }, entity_nrn: APP_NRN, user: { id: null } } });
+// What the worker accepts from the catalog's record of the execution.
 const workerAccepts = (slug: string, input: unknown) => {
   try {
-    parseCommand(envelope(slug, input));
+    parseLinkOperation(slug, input);
     return true;
   } catch (error) {
     if (error instanceof CommandError) return false;

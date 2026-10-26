@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { createHandler, createReplayGuard, linkOwnedBy, normalisePathPrefix, runCommand } from "../src/handler";
 import { type CatalogEntity, type CatalogExecution, createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
-import { CommandError, parseCommand } from "../src/protocol";
+import { CommandError, parseCommand, parseLinkOperation } from "../src/protocol";
 import { createS3, defaultClientFactory, type ObjectStore, type Target, totalFromContentRange } from "../src/s3";
 
 // Distinctive values: any appearance of these in an output is a leak.
@@ -27,8 +27,8 @@ const baseLink = (overrides: Partial<Link> & { attributes?: Record<string, unkno
 // The catalog as the worker sees it: execution records and entities. `linkEnvelope` records a
 // pending execution for every envelope it builds (unless told not to), as the catalog would.
 const executions = new Map<string, CatalogExecution>();
-const APP_ENTITY: CatalogEntity = { id: "ent-4", entity_specification_id: "spec-cat", nrn: APP_NRN, data: { application_id: "4", nrn: APP_NRN } };
-const entities = new Map<string, CatalogEntity>([["ent-4", APP_ENTITY]]);
+// Entities by external id (the application id), as the flat formatted read returns them.
+const entities = new Map<string, CatalogEntity>([["4", { application_id: "4", nrn: APP_NRN, created_at: "2026-01-01T00:00:00.000Z" }]]);
 const catalogReads: string[] = [];
 
 function fakePlatform(links: Record<string, Link>) {
@@ -95,7 +95,7 @@ function recordingStore() {
 let sequence = 0;
 const linkEnvelope = (slug: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}, record: Partial<CatalogExecution> | null = {}) => {
   const id = `exec-${++sequence}`;
-  if (record) executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, actor_type: "user", actor_id: "u-1", ...record });
+  if (record) executions.set(id, { id, entity_id: "0b6c2f5e-internal-uuid", entity_specification_id: "spec-cat", action: slug, status: "pending", input, actor_type: "user", actor_id: "u-1", entity_nrn: APP_NRN, ...record });
   return linkPayload(id, slug, input, extra);
 };
 const linkPayload = (id: string, slug: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
@@ -116,17 +116,19 @@ const linkPayload = (id: string, slug: string, input: Record<string, unknown>, e
 
 const parse = (result: { data: { stdout: string } }) => JSON.parse(result.data.stdout);
 
-function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false) {
+function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, extra: { unverifiedEntityBinding?: boolean } = {}) {
   const { platform, seen } = fakePlatform(links);
   const { store, calls } = recordingStore();
-  const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites } });
-  return { handler, seen, calls };
+  const warnings: string[] = [];
+  const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites, ...extra, warn: (message) => warnings.push(message) } });
+  return { handler, seen, calls, warnings };
 }
 
 describe("link mode: protocol", () => {
-  test("detected by the specification slug; carries link_id and the top-level entity_nrn", () => {
-    const command = parseCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/" }, { entity: { nrn: "organization=9:account=9:namespace=9:application=9" } }));
-    expect(command).toMatchObject({ action: "list-objects", prefix: "docs/", link: { link_id: "lnk-1", entity_nrn: APP_NRN } });
+  test("detected by the specification slug; only the execution id and slug are taken from the envelope", () => {
+    const command = parseCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/", bucket: "ignored" }));
+    expect(command).toMatchObject({ action: "list-objects", prefix: "", link: { specification_slug: "s3_browser", envelope_application_id: "4", link_id: "", entity_nrn: "" } });
+    expect(command.link!.execution_id).toMatch(/^exec-/);
     expect(command.catalog).toBeUndefined();
   });
 
@@ -137,23 +139,29 @@ describe("link mode: protocol", () => {
     expect(parseCommand(payload, { linkSpecification: "s3_browser" }).link).toBeDefined();
   });
 
-  test("validates link_id, entity_nrn and per-action fields", () => {
-    expect(() => parseCommand(linkEnvelope("list-objects", {}))).toThrow(/link_id/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: "../x" }))).toThrow(/link_id/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: 12 }))).toThrow(/link_id/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: "a".repeat(65) }))).toThrow(/link_id/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity_nrn: undefined }))).toThrow(/entity_nrn/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: "lnk-1", bucket: "evil" }))).toThrow(/unexpected input/);
-    expect(() => parseCommand(linkEnvelope("head-object", { link_id: "lnk-1", key: "a", prefix: "x/" }))).toThrow(/unexpected input/);
-    expect(() => parseCommand(linkEnvelope("head-object", { link_id: "lnk-1", key: "/etc/passwd" }))).toThrow(/key is required/);
-    expect(() => parseCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "/abs" }))).toThrow(/prefix/);
+  test("the envelope needs an execution id and a known operation", () => {
+    expect(() => parseCommand(linkEnvelope("list-objects", {}, { id: undefined }))).toThrow(/notification.id/);
+    expect(() => parseCommand(linkEnvelope("list-objects", {}, { id: "../x" }))).toThrow(/notification.id/);
     expect(() => parseCommand(linkEnvelope("rm-rf", { link_id: "lnk-1" }))).toThrow(CommandError);
   });
 
+  test("the recorded input: link_id and per-action fields", () => {
+    expect(parseLinkOperation("list-objects", { link_id: "lnk-1", prefix: "docs/" })).toMatchObject({ action: "list-objects", prefix: "docs/", link: { link_id: "lnk-1" } });
+    expect(() => parseLinkOperation("list-objects", {})).toThrow(/link_id/);
+    expect(() => parseLinkOperation("list-objects", { link_id: "../x" })).toThrow(/link_id/);
+    expect(() => parseLinkOperation("list-objects", { link_id: 12 })).toThrow(/link_id/);
+    expect(() => parseLinkOperation("list-objects", { link_id: "a".repeat(65) })).toThrow(/link_id/);
+    expect(() => parseLinkOperation("list-objects", { link_id: "lnk-1", bucket: "evil" })).toThrow(/unexpected input/);
+    expect(() => parseLinkOperation("head-object", { link_id: "lnk-1", key: "a", prefix: "x/" })).toThrow(/unexpected input/);
+    expect(() => parseLinkOperation("head-object", { link_id: "lnk-1", key: "/etc/passwd" })).toThrow(/key is required/);
+    expect(() => parseLinkOperation("list-objects", { link_id: "lnk-1", prefix: "/abs" })).toThrow(/prefix/);
+    expect(() => parseLinkOperation("rm-rf", { link_id: "lnk-1" })).toThrow(CommandError);
+  });
+
   test("read-object: max_bytes defaults to 262144 and is bounded", () => {
-    expect(parseCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "a.txt" })).max_bytes).toBe(262144);
-    expect(parseCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: 1 })).max_bytes).toBe(1);
-    for (const bad of [0, 262145, 1.5, "10"]) expect(() => parseCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: bad }))).toThrow(/max_bytes/);
+    expect(parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt" }).max_bytes).toBe(262144);
+    expect(parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: 1 }).max_bytes).toBe(1);
+    for (const bad of [0, 262145, 1.5, "10"]) expect(() => parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: bad })).toThrow(/max_bytes/);
   });
 
   test("read-object does not exist outside link mode", () => {
@@ -314,53 +322,81 @@ describe("link mode: the request is verified against the catalog", () => {
     for (const status of ["success", "failed"]) await refused(linkEnvelope("head-object", { link_id: "lnk-1", key: "a.txt" }, {}, { status }));
   });
 
-  test("an execution of another operation or another link", async () => {
+  test("an execution of another operation, or with invalid recorded input", async () => {
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { action: "delete-object", input: { link_id: "lnk-1", key: "a.txt" } }));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: { link_id: "lnk-2" } }));
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: { link_id: "lnk-1", bucket: "evil" } }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: null }));
   });
 
-  test("the operation's fields come from the catalog's record, not the envelope", async () => {
-    const { handler, calls } = setup();
-    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/" }, {}, { input: { link_id: "lnk-1", prefix: "recorded/" } }), handler);
+  test("the operation's fields, link_id included, come from the catalog's record, not the envelope", async () => {
+    const { handler, calls, seen } = setup({ "lnk-1": baseLink(), "lnk-2": baseLink({ id: "lnk-2" }) });
+    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/" }, {}, { input: { link_id: "lnk-2", prefix: "recorded/" } }), handler);
     expect(parse(result).prefix).toBe("recorded/");
     expect(calls.at(-1)?.arg).toBe("recorded/");
+    expect(seen).toContain("link lnk-2");
+    expect(seen).not.toContain("link lnk-1");
   });
 
-  test("the entity NRN comes from the catalog's entity, not the envelope", async () => {
-    // The envelope claims app 5, which owns the link; the catalog's entity is app 4: refused.
+  test("the NRN comes from the execution record, not the envelope", async () => {
+    // The envelope claims app 5, which owns the link; the record is on app 4: refused.
     const forged = setup({ "lnk-1": baseLink({ entity_nrn: otherApp }) });
-    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity_nrn: otherApp }), forged.handler)).error).toMatchObject({ status: 403, code: "LINK_NOT_OWNED" });
-    // The envelope claims app 5, the link and the catalog's entity are app 4: allowed.
+    const claim = { entity_nrn: otherApp, entity: { application_id: "5", nrn: otherApp } };
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, claim), forged.handler)).error).toMatchObject({ status: 403, code: "LINK_NOT_OWNED" });
+    // The envelope claims app 5, the link and the record are app 4: allowed.
     const honest = setup();
-    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity_nrn: otherApp }), honest.handler)).bucket).toBe("link-bucket");
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, claim), honest.handler)).bucket).toBe("link-bucket");
   });
 
-  test("the entity must sit exactly at an application matching its application_id", async () => {
-    const at = (id: string, entity: Omit<CatalogEntity, "id" | "entity_specification_id">) => (entities.set(id, { id, entity_specification_id: "spec-cat", ...entity }), { entity_id: id });
+  test("the record's entity_nrn must be exactly an application NRN", async () => {
     // A namespace-level entity would make every link of the namespace pass the ownership prefix.
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-ns", { nrn: "organization=1:account=2:namespace=3", data: { application_id: "3", nrn: "organization=1:account=2:namespace=3" } })));
-    // application_id and the NRN's application segment disagree.
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-mismatch", { nrn: APP_NRN, data: { application_id: "5", nrn: APP_NRN } })));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-scope", { nrn: `${APP_NRN}:scope=1`, data: { application_id: "4" } })));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-no-id", { nrn: APP_NRN, data: {} })));
-    // application_id only counts from data.
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-top-id", { nrn: APP_NRN, application_id: "4", data: {} })));
-    // Only the top-level NRN counts: one under data alone is not enough.
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-data-nrn", { data: { application_id: "4", nrn: APP_NRN } })));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-missing" }));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: undefined }));
-    // A numeric application_id is fine.
-    const { handler } = setup();
-    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, at("ent-num", { nrn: APP_NRN, data: { application_id: 4 } })), handler)).bucket).toBe("link-bucket");
+    for (const entity_nrn of ["organization=1:account=2:namespace=3", `${APP_NRN}:scope=1`, "organization=1:account=2:namespace=3:application=x", ""]) {
+      await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn }), { "lnk-1": baseLink({ entity_nrn: `${APP_NRN}:scope=1` }) });
+    }
+    // Present but invalid never falls back, even with the demo flag on.
+    const { handler, seen, warnings } = setup({ "lnk-1": baseLink() }, false, { unverifiedEntityBinding: true });
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn: "organization=1:account=2:namespace=3" }), handler)).error.code).toBe("EXECUTION_NOT_VERIFIED");
+    expect(seen).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
-  test("the specification check fails closed", async () => {
-    entities.set("ent-other-spec", { ...APP_ENTITY, id: "ent-other-spec", entity_specification_id: "spec-other" });
-    entities.set("ent-no-spec", { ...APP_ENTITY, id: "ent-no-spec", entity_specification_id: undefined });
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-other-spec" }));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_id: "ent-no-spec" }));
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_specification_id: undefined }));
+  test("no entity_nrn on the record fails closed when the demo flag is off", async () => {
+    catalogReads.length = 0;
+    for (const entity_nrn of [null, undefined]) await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn }));
+    expect(catalogReads.some((read) => read.startsWith("entity"))).toBe(false);
+  });
+
+  test("demo flag: without entity_nrn the entity named by the envelope is read back, with its checks", async () => {
+    const demo = (links: Record<string, Link> = { "lnk-1": baseLink() }) => setup(links, false, { unverifiedEntityBinding: true });
+    const ok = demo();
+    catalogReads.length = 0;
+    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "ignored/" }, {}, { entity_nrn: null, input: { link_id: "lnk-1", prefix: "recorded/" } }), ok.handler);
+    // Input still from the record; the entity read by the envelope's application id; a warning every time.
+    expect(parse(result)).toMatchObject({ bucket: "link-bucket", prefix: "recorded/" });
+    expect(catalogReads.filter((read) => read.startsWith("entity"))).toEqual(["entity s3_browser 4"]);
+    expect(ok.warnings).toHaveLength(1);
+    expect(ok.warnings[0]).toContain("S3_BROWSER_UNVERIFIED_ENTITY_BINDING");
+    await runCommand(linkEnvelope("head-object", { link_id: "lnk-1", key: "a.txt" }, {}, { entity_nrn: null }), ok.handler);
+    expect(ok.warnings).toHaveLength(2);
+
+    const refusedWith = async (payload: string) => {
+      const { handler, seen } = demo();
+      expect(parse(await runCommand(payload, handler)).error).toMatchObject({ status: 403, code: "EXECUTION_NOT_VERIFIED" });
+      expect(seen).toEqual([]);
+    };
+    // Still pending + same action + input from the record.
+    await refusedWith(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn: null, status: "success" }));
+    await refusedWith(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn: null, action: "head-object" }));
+    await refusedWith(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn: null, input: { link_id: "lnk-1", bucket: "x" } }));
+    // The envelope must name an application the catalog knows, at exactly its application NRN.
+    entities.set("6", { application_id: "6", nrn: "organization=1:account=2:namespace=3" });
+    entities.set("7", { application_id: "7", nrn: "organization=1:account=2:namespace=3:application=8" });
+    entities.set("9", { application_id: "10", nrn: "organization=1:account=2:namespace=3:application=9" });
+    for (const entity of [{ application_id: "6" }, { application_id: "7" }, { application_id: "9" }, { application_id: "404" }, {}, { application_id: "x" }]) {
+      await refusedWith(linkEnvelope("list-objects", { link_id: "lnk-1" }, { entity }, { entity_nrn: null }));
+    }
+    // And the link must still belong to that application.
+    const otherLink = demo({ "lnk-1": baseLink({ entity_nrn: otherApp }) });
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { entity_nrn: null }), otherLink.handler)).error.code).toBe("LINK_NOT_OWNED");
   });
 
   test("an execution id runs once per worker process", async () => {
@@ -373,7 +409,7 @@ describe("link mode: the request is verified against the catalog", () => {
     expect(calls).toHaveLength(1);
     // The replay is refused before the catalog is read again.
     const id = JSON.parse(payload).notification.id;
-    expect(catalogReads).toEqual([`execution s3_browser ${id}`, "entity s3_browser ent-4"]);
+    expect(catalogReads).toEqual([`execution s3_browser ${id}`]);
     // A refused attempt does not burn the id: a forged envelope first, the real run after it.
     const forgedFirst = linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { status: "success" });
     expect(parse(await runCommand(forgedFirst, handler)).error.code).toBe("EXECUTION_NOT_VERIFIED");
@@ -401,7 +437,7 @@ describe("link mode: the request is verified against the catalog", () => {
     await runCommand(first, handler);
     await runCommand(second, handler);
     const ids = [first, second].map((payload) => JSON.parse(payload).notification.id);
-    expect(catalogReads).toEqual([`execution s3_browser ${ids[0]}`, "entity s3_browser ent-4", `execution s3_browser ${ids[1]}`, "entity s3_browser ent-4"]);
+    expect(catalogReads).toEqual([`execution s3_browser ${ids[0]}`, `execution s3_browser ${ids[1]}`]);
   });
 });
 

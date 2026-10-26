@@ -20,9 +20,9 @@ Catalog context the worker receives (catalog-entities-api `ActionContext`):
 
 - One entity **per application**. Properties: `application_id` (string, `primaryKey: true`, `autoGenerate: false`,
   pattern `^\d+$`), `nrn` (string, `nrn: true`, pattern `^organization=\d+:account=\d+:namespace=\d+:application=\d+$`)
-  = the application NRN exactly. The catalog cannot cross-check the two, so the worker refuses (`EXECUTION_NOT_VERIFIED`)
-  an entity whose NRN is not exactly an application NRN or whose `application=<id>` differs from its `application_id`:
-  an entity at a namespace NRN would otherwise make every link of that namespace pass the ownership prefix.
+  = the application NRN exactly. The worker refuses (`EXECUTION_NOT_VERIFIED`) an execution whose `entity_nrn` is not
+  exactly an application NRN: an entity at a namespace NRN would otherwise make every link of that namespace pass the
+  ownership prefix.
   Path id in `/catalog/actions/s3_browser/{id}/…` and `/catalog/instances/s3_browser/{id}` = `application_id`.
 - Create body: `POST /catalog/instances/s3_browser` with the flat data `{ "application_id": "123", "nrn": "<app nrn>" }`
   (needs `entity:create` at that NRN).
@@ -55,7 +55,7 @@ Worker codes in link mode (CODE → status):
 | CODE | status | when |
 |---|---|---|
 | `BAD_REQUEST` / `UNKNOWN_ACTION` | 400 | malformed input |
-| `EXECUTION_NOT_VERIFIED` | 403 | the catalog has no pending execution matching the envelope (id, action, link_id), or its entity is not exactly at an application NRN matching its `application_id`, or either read failed |
+| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution with that id and action in the catalog, invalid recorded input, `entity_nrn` missing (flag off) or not exactly an application NRN, a replayed execution id, or a catalog read failed |
 | `LINK_NOT_FOUND` | 404 | `GET /link/{id}` is 404 |
 | `LINK_NOT_OWNED` | 403 | link.entity_nrn is neither the entity NRN nor under it (`entity_nrn + ":"` prefix) |
 | `LINK_NOT_READY` | 409 | link status not `active`, or no `aws_access_key_id`/`aws_secret_access_key` |
@@ -72,16 +72,28 @@ Worker codes in link mode (CODE → status):
 1. Link mode = catalog envelope whose `notification.specification.slug` equals `S3_BROWSER_LINK_SPECIFICATION`
    (env, default `s3_browser`). The existing bucket-entity catalog mode (`aws-s3-bucket`) and service/legacy shapes keep working.
 1b. **The envelope is not trusted.** Anyone with `agent:run_command` can send a catalog-shaped envelope through
-   `POST /controlplane/agent_command`. Before anything else (after the `WRITES_DISABLED` gate) the worker reads, with the
-   agent's key and no caching, `GET /catalog/actions/{slug}/executions/{notification.id}` and requires: the record exists,
-   `status === "pending"`, `record.action === notification.slug`, `record.input.link_id === input.link_id`. **All operation
-   fields are taken from `record.input`**, never from the envelope. Then it reads `GET /catalog/instances/{slug}/{record.entity_id}`
-   and requires `record.entity_specification_id` and `entity.entity_specification_id` to both be present and equal (fail
-   closed). The entity NRN is **only** the entity's top-level `nrn` (never `data.nrn`); it must match the application-NRN
-   pattern and its `application=<id>` must equal `data.application_id`. `notification.entity_nrn` is ignored. Each execution
+   `POST /controlplane/agent_command`. Link mode takes only `notification.id` and `notification.slug` from it. Before anything
+   else (after the `WRITES_DISABLED` gate) the worker reads, with the agent's key and no caching,
+   `GET /catalog/actions/{slug}/executions/{notification.id}` (specification-scoped: the catalog only returns records of
+   that specification) and requires the record to exist, `status === "pending"` and `record.action === notification.slug`.
+   **All operation fields (`link_id`, `prefix`, `token`, `limit`, `key`, `max_bytes`) come from `record.input`**, validated
+   with the same rules; the envelope's `input` and `entity_nrn` are ignored. The NRN the link must belong to is
+   `record.entity_nrn` (the NRN the catalog authorized the execution against), which must match
+   `^organization=\d+:account=\d+:namespace=\d+:application=\d+$`; absent, null or not matching → refused. Each execution
    id runs at most once per worker process (see Residual risks). Any failure → `EXECUTION_NOT_VERIFIED` (403).
+1c. **Interim demo flag, default off: `S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1`.** Only when `record.entity_nrn` is absent or
+   null (the catalog change that adds it is not deployed yet), the worker reads the entity named by the envelope,
+   `GET /catalog/instances/{slug}/{notification.entity.application_id}` (flat response, top-level `nrn`), and uses its `nrn`.
+   It still requires a pending record of the same action, takes the input from the record, and requires the NRN to be
+   exactly an application NRN whose `application=<id>` is the envelope's application id. Every use logs a warning.
+   A present but invalid `entity_nrn` never falls back. **Never enable it in a customer organization; remove it once the
+   catalog change is deployed.** What it gives up: the entity is no longer bound to the execution, so a caller with
+   `agent:run_command` can pair a real pending execution (of an entity they can write) with another application's id.
+   That caller can already use this same binary's legacy direct command and the `aws-s3-bucket` catalog mode, which open S3
+   with the agent's own identity without any catalog check, so in our own organization the flag adds no new capability; it
+   matters in a client organization whose agent role cannot read objects.
 2. Read the link with the agent's API key: `GET /link/{link_id}` including secret attributes
-   (query `include_secret_attributes=true`; needs `service:link:read-secrets` on the agent key — **unverified name, confirm in e2e**).
+   (query `include_secret_attributes=true`; needs `service:link:read-secrets` on the agent key — both confirmed in main-service-api source).
    Never cache link reads beyond the request; never log or return the keys.
 3. Ownership: `link.entity_nrn === <verified entity NRN>` or starts with `<verified entity NRN> + ":"`. Otherwise `LINK_NOT_OWNED`.
 4. `link.status` must be `active`; keys must be present.
@@ -108,24 +120,15 @@ Worker codes in link mode (CODE → status):
 - Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null,
   `delete-object` returns `{ key }`).
 
-## OPEN BLOCKER: binding the execution to its entity (catalog-entities-api 8ac01a3, read in source)
+## Binding the execution to its entity (resolved: catalog change pending deploy)
 
-- Verified: the execution record is written (`status: pending`) before the notification is dispatched and stays
-  `pending` until the sync answer is recorded, so `GET /catalog/actions/{slug}/executions/{id}` sees it while the worker runs.
-- Blocker: `record.entity_id` is the **internal** uuid (`uuidv5(application_id, <per-spec random namespace>)`), but
-  `GET /catalog/instances/s3_browser/{id}` takes the **external** id (it applies `uuidv5` again), so the read by
-  `record.entity_id` is a 404 and every link-mode request is refused (`EXECUTION_NOT_VERIFIED`, fail closed).
-  The namespace is not exposed (spec `metadata` is omitted from reads), and `GET /catalog/actions/{slug}/{id}/history`
-  queries the repository with the external id unresolved, so it is empty for this specification too.
-- Also from source: the entity read is the flat formatted data (`application_id`, `nrn`, `created_at`, `updated_at`), with
-  no `entity_specification_id` and no `data` wrapper; the worker's checks on `data.application_id` and on
-  `entity.entity_specification_id` therefore refuse as well until they are adapted.
-- Options: (a) catalog fix — resolve the external id in the history list, then bind via
-  `GET /catalog/actions/s3_browser/{application_id}/history?status=pending&action=<slug>` containing the execution id;
-  (b) catalog change — expose the external entity id (or the entity NRN) on the execution record;
-  (c) identity `autoGenerate: true` (internal id = external id) — breaks addressing by `application_id`;
-  (d) trust the envelope's entity id and read the entity by it — leaves a cross-entity pairing attack for a caller with
-  `agent:run_command` plus `entity:write` on any `s3_browser` entity.
+The execution record's `entity_id` is the catalog's internal uuid, which no public read accepts for a specification with
+an external primary key (`uuidv5(application_id, <per-spec namespace>)`), so the worker cannot read the entity from the
+record. Resolution: catalog-entities-api adds `entity_nrn` (string|null, the NRN the catalog authorized against) to
+`GET /catalog/actions/:slug/executions/:actionId`, and the worker binds on it (step 1b). Until that is deployed the record
+has no `entity_nrn` and link mode refuses every request, unless the demo flag of step 1c is on.
+Verified in source (8ac01a3): the record is written as `pending` before the notification is dispatched and stays so until
+the sync answer is recorded.
 
 ## Residual risks
 
@@ -137,6 +140,10 @@ Worker codes in link mode (CODE → status):
   catalog status transition the worker could make atomically (e.g. pending → running), which catalog-entities-api does
   not offer today. The window is bounded by the execution's pending time (≤ the executor's `timeout_ms`) and to callers
   with `agent:run_command`.
+- **Other modes of the same binary.** The legacy direct command (`{action, service_id}` through `agent_command`) and the
+  `aws-s3-bucket` catalog mode open S3 with the worker's own identity and do no catalog check; anyone with
+  `agent:run_command` can use them on any bucket that identity reaches. Candidates to disable or gate in the security review.
+- **`S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1`** (step 1c) unbinds the entity from the execution while it is on.
 - **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design); the secret never leaves the worker.
 
 ## Verified ordering
@@ -145,17 +152,15 @@ In catalog-entities-api `ActionDispatchService` (main 8ac01a3) `executorError(ou
 `outputSchemaViolation(...)`, so a refusal is recorded as `executor_error` with `"<CODE>: <message>"` and never
 as `invalid_output`. Output schemas therefore describe only the success shape.
 
-## Unverified names (confirm in e2e)
+## Names: confirmed and still to confirm in e2e
 
-- Query param for secret attributes on `GET /link/{id}`: read from env `S3_BROWSER_LINK_SECRETS_QUERY`
-  (default `include_secret_attributes=true`) so a rename is a config change.
-- Permission the agent's API key needs: `service:link:read-secrets` (the action name is in main-service-api
-  `LinkInstanceActions.READ_SECRETS`; whether an agent key can be granted it is still to confirm). Without
-  `include_secret_attributes` the services API masks the secret as `null`; the worker reports that as a `PLATFORM` failure.
-- Catalog reads the agent's API key needs for the verification: the execution record
-  (`GET /catalog/actions/s3_browser/executions/{id}`) and the entity (`GET /catalog/instances/s3_browser/{id}`), i.e. catalog
-  read on executions/entities of `s3_browser` across the organization. Whether `record.entity_id` is accepted by
-  `GET /catalog/instances/{slug}/{id}` (internal id vs `application_id`) is also to confirm.
+- Confirmed in main-service-api source: the query `include_secret_attributes=true` on `GET /link/{id}` (the controller reads
+  `includeSecretAttributes`) and the permission `service:link:read-secrets` (`LinkInstanceActions.READ_SECRETS`). Without
+  the query the services API masks the secret as `null`; the worker reports that as a `PLATFORM` failure. The query stays
+  configurable (`S3_BROWSER_LINK_SECRETS_QUERY`).
+- To confirm: that an agent API key can be granted `service:link:read-secrets` and catalog read on `s3_browser`
+  executions (and, only for the demo flag, entities) across the organization.
+- To confirm once deployed: `entity_nrn` on the execution read.
 
 ## Install (not run yet)
 

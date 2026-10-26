@@ -6,7 +6,7 @@
  */
 import type { ExecuteResult } from "@nullplatform/plugin";
 import { type Command, CommandError, type ParseOptions, parseCommand, parseLinkOperation } from "./protocol";
-import { type CatalogEntity, type Link, type Platform, PlatformError, bucketFromEnvelope, resolveBucket } from "./platform";
+import { type Link, type Platform, PlatformError, bucketFromEnvelope, resolveBucket } from "./platform";
 import { type ObjectStore, StoreError, type Target, redact } from "./s3";
 
 export interface HandlerConfig {
@@ -16,6 +16,13 @@ export interface HandlerConfig {
   allowWrites: boolean;
   /** Link mode: how many verified execution ids to remember, and for how long (replay guard). */
   replay?: { max?: number; ttlMs?: number; now?: () => number };
+  /**
+   * DEMO ONLY (S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1): when the catalog's execution record has no
+   * `entity_nrn` yet, take the entity from the envelope's application id. Off by default.
+   */
+  unverifiedEntityBinding?: boolean;
+  /** Where the fallback's warning goes (stderr by default). */
+  warn?: (message: string) => void;
 }
 
 export type Handler = (command: Command) => Promise<unknown>;
@@ -39,17 +46,11 @@ export const APPLICATION_NRN = /^organization=\d+:account=\d+:namespace=\d+:appl
 
 const notVerified = (why: string) => new CommandError(`execution not verified: ${why}`, 403, "EXECUTION_NOT_VERIFIED");
 
-/**
- * The application NRN of a catalog entity read: only its top-level `nrn` (the one the catalog
- * authorizes on), exactly an application NRN whose `application=<id>` is `data.application_id`.
- */
-export function entityApplicationNrn(entity: CatalogEntity): string | undefined {
-  const data = entity.data && typeof entity.data === "object" ? entity.data : {};
-  const nrn = entity.nrn;
-  const applicationId = data.application_id;
-  if (typeof nrn !== "string" || !nrn) return undefined;
+/** `nrn` when it is exactly an application NRN (and, when given, of that application id). */
+export function applicationNrn(nrn: unknown, applicationId?: string): string | undefined {
+  if (typeof nrn !== "string") return undefined;
   const match = APPLICATION_NRN.exec(nrn);
-  if (!match || (typeof applicationId !== "string" && typeof applicationId !== "number") || match[1] !== String(applicationId)) return undefined;
+  if (!match || (applicationId !== undefined && match[1] !== applicationId)) return undefined;
   return nrn;
 }
 
@@ -84,13 +85,14 @@ export function createReplayGuard({ max = 10_000, ttlMs = 600_000, now = Date.no
 
 /**
  * Binds a link-mode request to the catalog: the envelope is not trusted (anyone who can run an
- * agent command can forge one). The execution must exist, still be pending and be the same
- * operation on the same link; the operation's fields come from the catalog's record, and the
- * NRN the link must belong to from the catalog's entity, which must sit exactly at an
- * application whose id matches its application_id. Nothing here is cached.
+ * agent command can forge one), only its execution id and operation are used. The catalog's
+ * record of that execution (read through the specification-scoped route, never cached) must be
+ * pending and of the same operation; the operation's fields come from its `input`, and the NRN
+ * the link must belong to is its `entity_nrn` — the NRN the catalog authorized the execution
+ * against — which must be exactly an application NRN.
  */
-export async function verifyExecution(platform: Platform, command: Command): Promise<Command> {
-  const { execution_id: executionId, specification_slug: slug, link_id: linkId } = command.link!;
+export async function verifyExecution(platform: Platform, command: Command, config: Pick<HandlerConfig, "unverifiedEntityBinding" | "warn"> = {}): Promise<Command> {
+  const { execution_id: executionId, specification_slug: slug, envelope_application_id: claimedApplication } = command.link!;
   const read = async <T>(work: () => Promise<T>, what: string): Promise<T> => {
     try {
       return await work();
@@ -108,14 +110,24 @@ export async function verifyExecution(platform: Platform, command: Command): Pro
   } catch (error) {
     throw notVerified(`the recorded input is invalid (${(error as Error).message})`);
   }
-  if (verified.link!.link_id !== linkId) throw notVerified(`execution ${executionId} is for another link`);
-  if (typeof record.entity_id !== "string" || !record.entity_id) throw notVerified(`execution ${executionId} names no entity`);
-  const entity = await read(() => platform.getEntity(slug, record.entity_id!), `entity ${record.entity_id}`);
-  // Fail closed: both sides must name the specification, and the same one.
-  if (!record.entity_specification_id || !entity.entity_specification_id || record.entity_specification_id !== entity.entity_specification_id) throw notVerified(`entity ${record.entity_id} is not known to be of the execution's specification`);
-  const entityNrn = entityApplicationNrn(entity);
-  if (!entityNrn) throw notVerified(`entity ${record.entity_id} is not at an application NRN matching its application_id`);
-  verified.link = { link_id: linkId, entity_nrn: entityNrn, execution_id: executionId, specification_slug: slug };
+
+  let entityNrn: string | undefined;
+  if (record.entity_nrn !== undefined && record.entity_nrn !== null) {
+    entityNrn = applicationNrn(record.entity_nrn);
+    if (!entityNrn) throw notVerified(`execution ${executionId} is not on an application NRN`);
+  } else if (config.unverifiedEntityBinding) {
+    // Interim only, until the catalog returns entity_nrn: the entity is the one the envelope
+    // names, read back from the catalog. Not bound to the execution record.
+    (config.warn ?? ((message: string) => console.error(message)))(`[s3-browser] WARNING: execution ${executionId} has no entity_nrn; binding the entity from the envelope (S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1, never enable in a customer organization)`);
+    if (!claimedApplication) throw notVerified("the envelope names no application id");
+    const entity = await read(() => platform.getEntity(slug, claimedApplication), `entity ${claimedApplication}`);
+    if (entity.application_id !== undefined && String(entity.application_id) !== claimedApplication) throw notVerified(`entity ${claimedApplication} has another application_id`);
+    entityNrn = applicationNrn(entity.nrn, claimedApplication);
+    if (!entityNrn) throw notVerified(`entity ${claimedApplication} is not at that application's NRN`);
+  } else {
+    throw notVerified(`execution ${executionId} carries no entity_nrn`);
+  }
+  verified.link = { execution_id: executionId, specification_slug: slug, link_id: verified.link!.link_id, entity_nrn: entityNrn };
   return verified;
 }
 
@@ -193,7 +205,7 @@ export function createHandler({ platform, store, config }: { platform: Platform;
       // Never act on the envelope alone: everything below uses the catalog-verified command.
       const executionId = command.link.execution_id;
       if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
-      const verified = await verifyExecution(platform, command);
+      const verified = await verifyExecution(platform, command, config);
       // One run per execution id: claimed before any link or S3 work.
       if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
       replay.claim(executionId);
