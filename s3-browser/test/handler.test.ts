@@ -16,6 +16,15 @@ const platform: Platform = {
   async getSpecification(id) {
     return id === "spec-s3" ? { id, slug: "aws-s3-bucket-agent-k8s" } : { id, slug: "rds-postgres" };
   },
+  async getLink(id) {
+    throw Object.assign(new Error(`link ${id} not found`), { status: 404, code: "LINK_NOT_FOUND", name: "PlatformError" });
+  },
+  async getExecution() {
+    throw new Error("no catalog in these tests");
+  },
+  async getEntity() {
+    throw new Error("no catalog in these tests");
+  },
 };
 
 const calls: unknown[] = [];
@@ -33,6 +42,9 @@ const store: ObjectStore = {
   async remove(_target, key) {
     calls.push(["remove", key]);
     return { key };
+  },
+  async read(_target, key) {
+    return { key, text: "", truncated: false, size: 0 };
   },
 };
 
@@ -110,7 +122,7 @@ describe("service-action envelope", () => {
   };
 
   test("prefers the attributes the platform sent over a lookup", async () => {
-    const direct = createHandler({ platform: { getService: never, getSpecification: never }, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
+    const direct = createHandler({ platform: { getService: never, getSpecification: never, getLink: never, getExecution: never, getEntity: never }, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
     const result = await runCommand(envelope("list-objects", { prefix: "docs/" }), direct);
     expect(result.success).toBe(true);
     expect(parse(result)).toMatchObject({ bucket: "bucket-from-envelope", region: "us-east-2" });

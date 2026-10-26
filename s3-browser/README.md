@@ -139,6 +139,107 @@ A missing bucket or region is an error answer (`400`); there is no fallback look
 in `input` is ignored. `delete-object` needs `S3_BROWSER_ALLOW_WRITES=1` here too. The answer is one
 JSON object on stdout; `{ "error": { "code", "message" } }` is a failure for the catalog.
 
+## Link mode (per application, with the link's own keys)
+
+A developer browses the S3 buckets **linked to their application**. S3 is opened with the
+link's own IAM keys (the key the application already has), never with the worker's identity.
+The full contract shared with the UI plugin is [`catalog/LINK_MODE.md`](catalog/LINK_MODE.md).
+
+```
+plugin ── POST /catalog/actions/s3_browser/{application_id}/{action} {input:{link_id,…}} ──▶ catalog (sync)
+catalog ── notification (source catalog) ──▶ agent channel (specification.slug == s3_browser) ──▶ agent ──▶ worker
+worker ── verify the execution in the catalog, read link (+secrets), read its service ──▶ S3 with the link's keys
+catalog ◀── 200 with the worker's JSON (or a failed record "<CODE>: <message>") ◀──────────┘
+```
+
+Envelope (`NP_ACTION_CONTEXT = {"notification": <catalog context>}`), detected when
+`notification.specification.slug` equals `S3_BROWSER_LINK_SPECIFICATION` (default `s3_browser`):
+
+| Field | Used as |
+|---|---|
+| `notification.id` | the catalog execution, re-read and verified before anything else |
+| `notification.slug` | the operation; must equal the record's `action` |
+| `notification.input`, `notification.entity_nrn` | ignored: the fields come from the record's `input`, the NRN from the record's `entity_nrn` |
+
+Actions (all `sync`, every input has `link_id`, nothing else allowed):
+`list-objects` (`prefix?`, `token?`, `limit?`), `head-object` (`key`), `read-object` (`key`,
+`max_bytes?` 1–262144, default 262144: the first bytes as UTF-8 with `truncated` and the total
+`size`), `presign-download` (`key`), `delete-object` (`key`). Outputs as in the bucket mode.
+
+Checks, in order (all mandatory):
+
+1. `delete-object` needs `S3_BROWSER_ALLOW_WRITES=1` (`WRITES_DISABLED`, before any lookup).
+2. The execution is verified with the agent's key, without cache: `GET /catalog/actions/s3_browser/executions/{id}`
+   must be `pending` and of the same action; its `input` gives every field (`link_id` included) and its `entity_nrn`
+   must be exactly an application NRN; an execution id runs once per worker process (`EXECUTION_NOT_VERIFIED`).
+3. `GET /link/{link_id}?include_secret_attributes=true` (never cached; `LINK_NOT_FOUND`).
+4. The link's `entity_nrn` is the entity's NRN or under it (`:` boundary), e.g. a scope of the app (`LINK_NOT_OWNED`).
+5. The link is `active` with `aws_access_key_id`/`aws_secret_access_key` (`LINK_NOT_READY`).
+6. Bucket and region come only from the link's service, which must be an accepted specification (`NOT_A_BUCKET`, `NO_BUCKET`).
+7. Every prefix and key stays under the link's `path_prefix` (an empty list prefix lists at it) (`OUTSIDE_PREFIX`).
+8. `delete-object` needs `access_level` `write` or `read-write` (`WRITE_NOT_ALLOWED`).
+
+| CODE | Status | When |
+|---|---|---|
+| `BAD_REQUEST`, `UNKNOWN_ACTION` | 400 | malformed input |
+| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution of that action, invalid recorded input, `entity_nrn` missing or not an application NRN, replay, or a catalog read failed |
+| `LINK_NOT_FOUND` | 404 | the link does not exist |
+| `LINK_NOT_OWNED` | 403 | the link belongs to another application |
+| `LINK_NOT_READY` | 409 | the link is not active or has no keys yet |
+| `NOT_A_BUCKET` / `NO_BUCKET` | 400 / 409 | the link's service is not an S3 bucket / has no bucket yet |
+| `OUTSIDE_PREFIX` | 403 | prefix or key outside `path_prefix` |
+| `WRITE_NOT_ALLOWED` | 403 | delete on a `read` link |
+| `WRITES_DISABLED` | 405 | delete without `S3_BROWSER_ALLOW_WRITES=1` |
+| S3 error names (`AccessDenied`, `NoSuchKey`, …) | 403/404/502 | from AWS |
+| `PLATFORM`, `NO_CREDENTIALS`, `WORKER` | ≥500 | failed execution (e.g. the link's secret came back masked) |
+
+The keys never appear in stdout, stderr, logs or error messages (S3 error messages are scrubbed of
+them). One exception by design: a presigned URL carries the access key id in `X-Amz-Credential`;
+the secret never leaves the worker. Each request builds its own S3 client with the link's keys;
+nothing built with them is cached or shared with the worker's default-chain client.
+
+Files in [`catalog/`](catalog/): [`s3_browser.specification.json`](catalog/s3_browser.specification.json)
+(entity `application_id` + `nrn`, the five actions, reads granted to everyone, delete to nobody),
+[`s3_browser.executors.json`](catalog/s3_browser.executors.json) (five `notification` executors,
+15 s), [`s3_browser.channel.example.json`](catalog/s3_browser.channel.example.json) (agent channel).
+To grant the delete, add e.g. `{ "principals": [{ "type": "role", "id": 9 }], "actions": ["action:delete-object"] }`.
+
+### Interim demo flag: `S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1` (off by default)
+
+The catalog change that adds `entity_nrn` to the execution read is pending deploy; until then every
+link-mode request is refused. With this flag, and only when the record has no `entity_nrn`, the
+worker reads the entity named by the envelope (`GET /catalog/instances/s3_browser/{entity.application_id}`)
+and uses its `nrn`, still requiring a pending record of the same action, the input from the record
+and an exact application NRN for that id. Every use logs a warning. **Never enable it in a customer
+organization; remove it once the catalog change is deployed.** It unbinds the entity from the
+execution, so a caller with `agent:run_command` could pair a real execution with another
+application. That caller can already use this binary's legacy direct command and the
+`aws-s3-bucket` catalog mode, which open S3 with the agent's identity without any catalog check, so
+in our own organization the flag adds no new capability; it matters in a client organization whose
+agent role cannot read objects. Those two modes are candidates to disable or gate (see Residual
+risks in LINK_MODE.md).
+
+### Install
+
+```bash
+NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… node catalog/install.mjs --dry-run   # prints, sends nothing
+NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… node catalog/install.mjs
+```
+
+It creates or updates the specification (`--allow-destructive` when an update narrows it), the
+five executors and the agent channel (`--skip-channel`), and seeds one `s3_browser` entity per
+application with a link to an `aws-s3-bucket*` service (`--skip-seed`; 409 = already there).
+`--dry-run` cannot preview the seeding (it sends no reads either). Not yet run against a real API.
+
+### Confirmed, and to confirm in e2e
+
+- Confirmed in main-service-api source: `include_secret_attributes=true` on `GET /link/{id}` (still
+  configurable with `S3_BROWSER_LINK_SECRETS_QUERY`) and the permission `service:link:read-secrets`.
+- To confirm: that an agent API key can hold `service:link:read-secrets` and catalog read on
+  `s3_browser` executions (and entities, for the demo flag only).
+- To confirm once deployed: `entity_nrn` on `GET /catalog/actions/s3_browser/executions/{id}`.
+- Installer list queries: `GET /notification/channel?nrn=…` and `GET /link?nrn=…&show_descendants=true&limit=&offset=`.
+
 ## Legacy direct command
 
 Existing installs keep working: the worker still accepts
@@ -152,12 +253,15 @@ id, and the result is the same JSON.
 
 | Variable | Meaning |
 |---|---|
-| `NP_API_KEY`, `NP_API_URL` | injected by the agent at spawn; used to read the service when the envelope lacks the bucket |
+| `NP_API_KEY`, `NP_API_URL` | injected by the agent at spawn; used to read the service when the envelope lacks the bucket, and in link mode the catalog execution, the link and its service |
 | `AWS_REGION` | default region when the service has none; credentials from the default chain (IRSA in a cluster, env locally) |
 | `S3_BROWSER_ALLOW_IMDS` | `1` lets the credential chain query EC2 instance metadata (off by default: a container without a route to it hangs) |
 | `S3_BROWSER_SPECIFICATIONS` | accepted specification slugs, comma list, trailing `*` = prefix; default `aws-s3-bucket*` |
 | `S3_BROWSER_ALLOW_WRITES` | `1` enables `delete-object` |
 | `S3_BROWSER_DOWNLOAD_TTL_SECONDS` | presigned URL lifetime, default 900 |
+| `S3_BROWSER_LINK_SPECIFICATION` | catalog specification slug that selects link mode, default `s3_browser` |
+| `S3_BROWSER_LINK_SECRETS_QUERY` | query string for `GET /link/{id}` that includes secret attributes, default `include_secret_attributes=true` |
+| `S3_BROWSER_UNVERIFIED_ENTITY_BINDING` | `1` = demo-only fallback when the execution record has no `entity_nrn`; never in a customer organization |
 
 ## Develop
 

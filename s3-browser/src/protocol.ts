@@ -9,12 +9,23 @@
  *
  * - the catalog envelope `{ notification: { action: "catalog:action:create", slug, input,
  *   entity: { bucket_name, region } } }`, built by the catalog API for an executor with
- *   `transport: notification`.
+ *   `transport: notification`;
+ * - link mode: the same catalog envelope for the `s3_browser` specification (one entity per
+ *   application). Only `notification.id` (the execution) and `notification.slug` are taken from
+ *   it; the handler reads everything else, `link_id` included, from the catalog's record of the
+ *   execution (see catalog/LINK_MODE.md).
  *
  * All reduce to a `Command`; only the fields below matter here.
  */
+/** The service-action, legacy and bucket-entity catalog modes. */
 export const ACTIONS = ["list-objects", "head-object", "presign-download", "delete-object"] as const;
-export type Action = (typeof ACTIONS)[number];
+/** Link mode adds `read-object`; the other modes do not declare it, so they refuse it. */
+export const LINK_ACTIONS = [...ACTIONS, "read-object"] as const;
+export type Action = (typeof LINK_ACTIONS)[number];
+
+/** Default slug of the per-application catalog specification that selects link mode. */
+export const DEFAULT_LINK_SPECIFICATION = "s3_browser";
+export const READ_MAX_BYTES = 262_144;
 
 export interface Command {
   action: Action;
@@ -24,6 +35,14 @@ export interface Command {
   token?: string;
   limit: number;
   key?: string;
+  /** read-object only: how many bytes to read from the start of the object. */
+  max_bytes?: number;
+  /**
+   * Link mode. From the envelope: the execution id and specification slug (and, for the opt-in
+   * unverified fallback only, the application id it claims). `link_id` and `entity_nrn` are empty
+   * until the handler fills them from the catalog's record of the execution.
+   */
+  link?: { execution_id: string; specification_slug: string; envelope_application_id?: string; link_id: string; entity_nrn: string };
   /** Present for the action envelope: what the platform sent about the service. Never caller-controlled. */
   /** Present for the catalog envelope: the catalog instance IS the bucket, no lookup. */
   catalog?: { bucket: string; region: string };
@@ -40,7 +59,23 @@ export class CommandError extends Error {
 
 const KEY_MAX = 1024;
 
-export function parseCommand(raw: unknown): Command {
+export interface ParseOptions {
+  /** Catalog specification slug that selects link mode (S3_BROWSER_LINK_SPECIFICATION). */
+  linkSpecification?: string;
+}
+
+/** Fields each link-mode action accepts in `input`; anything else is refused, as the schemas do. */
+export const LINK_INPUT_FIELDS: Record<string, string[]> = {
+  "list-objects": ["link_id", "prefix", "token", "limit"],
+  "head-object": ["link_id", "key"],
+  "read-object": ["link_id", "key", "max_bytes"],
+  "presign-download": ["link_id", "key"],
+  "delete-object": ["link_id", "key"],
+};
+const LINK_ID = /^[A-Za-z0-9-]{1,64}$/;
+const EXECUTION_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+export function parseCommand(raw: unknown, { linkSpecification = DEFAULT_LINK_SPECIFICATION }: ParseOptions = {}): Command {
   let value: unknown = raw;
   if (Buffer.isBuffer(raw)) value = raw.toString("utf8");
   if (typeof value === "string") {
@@ -62,9 +97,24 @@ export function parseCommand(raw: unknown): Command {
     outer.action === undefined && outer.command === undefined && notification !== undefined &&
     (notification.action === "catalog:action:create" || (typeof notification.slug === "string" && record(notification.input) !== undefined && catalogEntity !== undefined));
   const isEnvelope = !isCatalog && outer.action === undefined && outer.command === undefined && typeof slug === "string";
+  const isLink = isCatalog && typeof slug === "string" && slug === linkSpecification;
   let body: Record<string, unknown>;
   let service: Command["service"];
   let catalog: Command["catalog"];
+  if (isLink) {
+    // Nothing but WHICH execution this is comes from the envelope: the operation's fields come
+    // from the catalog's record of it, read by the handler before anything else.
+    const executionId = notification!.id;
+    if (typeof executionId !== "string" || !EXECUTION_ID.test(executionId)) throw new CommandError("notification.id (the catalog execution) is required", 400);
+    const operation = notification!.slug;
+    if (typeof operation !== "string" || !(LINK_ACTIONS as readonly string[]).includes(operation)) {
+      throw new CommandError(`unknown action ${JSON.stringify(operation ?? null)}; expected one of ${LINK_ACTIONS.join(", ")}`, 400, "UNKNOWN_ACTION");
+    }
+    const claimed = catalogEntity?.application_id ?? catalogEntity?.id;
+    const command: Command = { action: operation as Action, service_id: "link", prefix: "", limit: 200, link: { execution_id: executionId, specification_slug: slug as string, link_id: "", entity_nrn: "" } };
+    if ((typeof claimed === "string" || typeof claimed === "number") && /^\d+$/.test(String(claimed))) command.link!.envelope_application_id = String(claimed);
+    return command;
+  }
   if (isCatalog) {
     // Operation = slug, fields = input; bucket and region come from the entity only.
     const { bucket, region } = { bucket: catalogEntity?.bucket_name, region: catalogEntity?.region };
@@ -81,9 +131,17 @@ export function parseCommand(raw: unknown): Command {
     body = (outer.command && typeof outer.command === "object" ? outer.command : outer) as Record<string, unknown>;
   }
 
+  const command = buildCommand(body, ACTIONS);
+  if (catalog) command.catalog = catalog;
+  if (service) command.service = service;
+  return command;
+}
+
+/** The validation every mode shares, on the operation and its flattened fields. */
+function buildCommand(body: Record<string, unknown>, actions: readonly string[]): Command {
   const action = body.action;
-  if (typeof action !== "string" || !(ACTIONS as readonly string[]).includes(action)) {
-    throw new CommandError(`unknown action ${JSON.stringify(action ?? null)}; expected one of ${ACTIONS.join(", ")}`, 400, "UNKNOWN_ACTION");
+  if (typeof action !== "string" || !actions.includes(action)) {
+    throw new CommandError(`unknown action ${JSON.stringify(action ?? null)}; expected one of ${actions.join(", ")}`, 400, "UNKNOWN_ACTION");
   }
   const serviceId = body.service_id;
   if (typeof serviceId !== "string" || !/^[a-zA-Z0-9-]{1,64}$/.test(serviceId)) throw new CommandError("service_id is required", 400);
@@ -102,7 +160,30 @@ export function parseCommand(raw: unknown): Command {
     if (!key || key.startsWith("/") || key.endsWith("/") || key.length > KEY_MAX) throw new CommandError("key is required (a relative object key)", 400);
   }
   const command: Command = { action: action as Action, service_id: serviceId, prefix, token, limit, key };
-  if (catalog) command.catalog = catalog;
-  if (service) command.service = service;
+  if (action === "read-object") {
+    const maxBytes = body.max_bytes === undefined || body.max_bytes === null ? READ_MAX_BYTES : body.max_bytes;
+    if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > READ_MAX_BYTES) throw new CommandError(`max_bytes must be an integer between 1 and ${READ_MAX_BYTES}`, 400);
+    command.max_bytes = maxBytes;
+  }
+  return command;
+}
+
+/**
+ * A link-mode operation and its input, as the s3_browser schemas define them: only the
+ * declared fields, `link_id` required. Used on the catalog's record of the execution.
+ */
+export function parseLinkOperation(operation: unknown, rawInput: unknown): Command {
+  const input = rawInput === undefined || rawInput === null ? {} : rawInput;
+  if (typeof input !== "object" || Array.isArray(input)) throw new CommandError("input must be an object", 400);
+  const fields = input as Record<string, unknown>;
+  if (typeof operation !== "string" || !(LINK_ACTIONS as readonly string[]).includes(operation)) {
+    throw new CommandError(`unknown action ${JSON.stringify(operation ?? null)}; expected one of ${LINK_ACTIONS.join(", ")}`, 400, "UNKNOWN_ACTION");
+  }
+  const extra = Object.keys(fields).filter((field) => !LINK_INPUT_FIELDS[operation].includes(field));
+  if (extra.length) throw new CommandError(`unexpected input field(s): ${extra.join(", ")}`, 400);
+  const linkId = fields.link_id;
+  if (typeof linkId !== "string" || !LINK_ID.test(linkId)) throw new CommandError("link_id is required (1-64 letters, digits or dashes)", 400);
+  const command = buildCommand({ ...fields, action: operation, service_id: "link" }, LINK_ACTIONS);
+  command.link = { execution_id: "", specification_slug: "", link_id: linkId, entity_nrn: "" };
   return command;
 }

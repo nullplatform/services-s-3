@@ -24,11 +24,14 @@ const store: ObjectStore = {
   async remove(_t, key) {
     return { key };
   },
+  async read(_t, key) {
+    return { key, text: "", truncated: false, size: 0 };
+  },
 };
 const unused = async (): Promise<never> => {
   throw new Error("unused");
 };
-const platform: Platform = { getService: unused, getSpecification: unused };
+const platform: Platform = { getService: unused, getSpecification: unused, getLink: unused, getExecution: unused, getEntity: unused };
 const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
 const inputs: Record<string, Record<string, unknown>> = {
   "list-objects": { prefix: "docs/", limit: 50, token: "t" },
