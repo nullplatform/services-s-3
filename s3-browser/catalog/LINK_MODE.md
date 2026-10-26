@@ -108,6 +108,25 @@ Worker codes in link mode (CODE → status):
 - Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null,
   `delete-object` returns `{ key }`).
 
+## OPEN BLOCKER: binding the execution to its entity (catalog-entities-api 8ac01a3, read in source)
+
+- Verified: the execution record is written (`status: pending`) before the notification is dispatched and stays
+  `pending` until the sync answer is recorded, so `GET /catalog/actions/{slug}/executions/{id}` sees it while the worker runs.
+- Blocker: `record.entity_id` is the **internal** uuid (`uuidv5(application_id, <per-spec random namespace>)`), but
+  `GET /catalog/instances/s3_browser/{id}` takes the **external** id (it applies `uuidv5` again), so the read by
+  `record.entity_id` is a 404 and every link-mode request is refused (`EXECUTION_NOT_VERIFIED`, fail closed).
+  The namespace is not exposed (spec `metadata` is omitted from reads), and `GET /catalog/actions/{slug}/{id}/history`
+  queries the repository with the external id unresolved, so it is empty for this specification too.
+- Also from source: the entity read is the flat formatted data (`application_id`, `nrn`, `created_at`, `updated_at`), with
+  no `entity_specification_id` and no `data` wrapper; the worker's checks on `data.application_id` and on
+  `entity.entity_specification_id` therefore refuse as well until they are adapted.
+- Options: (a) catalog fix — resolve the external id in the history list, then bind via
+  `GET /catalog/actions/s3_browser/{application_id}/history?status=pending&action=<slug>` containing the execution id;
+  (b) catalog change — expose the external entity id (or the entity NRN) on the execution record;
+  (c) identity `autoGenerate: true` (internal id = external id) — breaks addressing by `application_id`;
+  (d) trust the envelope's entity id and read the entity by it — leaves a cross-entity pairing attack for a caller with
+  `agent:run_command` plus `entity:write` on any `s3_browser` entity.
+
 ## Residual risks
 
 - **Replay of a pending execution.** A caller holding `agent:run_command` who learns the id of someone else's execution
