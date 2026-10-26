@@ -1,0 +1,395 @@
+{
+  "slug": "s3_browser",
+  "name": "S3 browser",
+  "description": "One entity per application: browse the S3 buckets linked to it, with each link's own keys",
+  "schema": {
+    "type": "object",
+    "required": [
+      "application_id",
+      "nrn"
+    ],
+    "properties": {
+      "application_id": {
+        "type": "string",
+        "primaryKey": true,
+        "autoGenerate": false
+      },
+      "nrn": {
+        "type": "string",
+        "nrn": true
+      }
+    },
+    "actions": {
+      "list-objects": {
+        "name": "List objects",
+        "execution": "sync",
+        "input": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "required": [
+            "link_id"
+          ],
+          "properties": {
+            "link_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,64}$",
+              "title": "Link",
+              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
+            },
+            "prefix": {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^[^/]",
+              "title": "Prefix",
+              "description": "Relative key prefix, usually ending in /"
+            },
+            "token": {
+              "type": "string",
+              "title": "Continuation token"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "bucket",
+            "region",
+            "prefix",
+            "folders",
+            "objects",
+            "next_token",
+            "truncated"
+          ],
+          "properties": {
+            "bucket": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "folders": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "prefix",
+                  "name"
+                ],
+                "properties": {
+                  "prefix": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "objects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "key",
+                  "name",
+                  "size",
+                  "last_modified"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "size": {
+                    "type": "number"
+                  },
+                  "last_modified": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "storage_class": {
+                    "type": "string"
+                  },
+                  "etag": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "next_token": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "head-object": {
+        "name": "Head object",
+        "execution": "sync",
+        "input": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "required": [
+            "link_id",
+            "key"
+          ],
+          "properties": {
+            "link_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,64}$",
+              "title": "Link",
+              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^/].*[^/]$|^[^/]$",
+              "title": "Key",
+              "description": "Relative object key (no leading or trailing slash)"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "key",
+            "size",
+            "last_modified",
+            "metadata"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            },
+            "content_type": {
+              "type": "string"
+            },
+            "last_modified": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "etag": {
+              "type": "string"
+            },
+            "storage_class": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "read-object": {
+        "name": "Read object",
+        "execution": "sync",
+        "input": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "required": [
+            "link_id",
+            "key"
+          ],
+          "properties": {
+            "link_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,64}$",
+              "title": "Link",
+              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^/].*[^/]$|^[^/]$",
+              "title": "Key",
+              "description": "Relative object key (no leading or trailing slash)"
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 262144,
+              "default": 262144,
+              "title": "Max bytes",
+              "description": "How many bytes to read from the start of the object"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "key",
+            "text",
+            "truncated",
+            "size"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "content_type": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "presign-download": {
+        "name": "Presign download",
+        "execution": "sync",
+        "input": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "required": [
+            "link_id",
+            "key"
+          ],
+          "properties": {
+            "link_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,64}$",
+              "title": "Link",
+              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^/].*[^/]$|^[^/]$",
+              "title": "Key",
+              "description": "Relative object key (no leading or trailing slash)"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "key",
+            "url",
+            "expires_at"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "delete-object": {
+        "name": "Delete object",
+        "execution": "sync",
+        "input": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "required": [
+            "link_id",
+            "key"
+          ],
+          "properties": {
+            "link_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,64}$",
+              "title": "Link",
+              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^/].*[^/]$|^[^/]$",
+              "title": "Key",
+              "description": "Relative object key (no leading or trailing slash)"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "key"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "authorization": {
+      "entities": {
+        "grants": [
+          {
+            "principals": [
+              {
+                "type": "*"
+              }
+            ],
+            "actions": [
+              "read",
+              "list",
+              "action:list-objects",
+              "action:head-object",
+              "action:read-object",
+              "action:presign-download"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

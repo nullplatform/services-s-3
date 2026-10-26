@@ -60,7 +60,7 @@ export interface ParseOptions {
 }
 
 /** Fields each link-mode action accepts in `input`; anything else is refused, as the schemas do. */
-const LINK_INPUT_FIELDS: Record<string, string[]> = {
+export const LINK_INPUT_FIELDS: Record<string, string[]> = {
   "list-objects": ["link_id", "prefix", "token", "limit"],
   "head-object": ["link_id", "key"],
   "read-object": ["link_id", "key", "max_bytes"],
