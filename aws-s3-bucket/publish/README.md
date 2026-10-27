@@ -14,7 +14,7 @@ The revision's version is `version.txt`. The apply refuses to publish when it do
 
 | Kind | Name | Purpose |
 |---|---|---|
-| secret | `PACKAGE_NP_API_KEY` | API key of the publisher organization, allowed to write specs and packages |
+| secret | `ARTIFACT_NP_API_KEY` | API key of the publisher organization, already used to register the image. Passed as `package_np_api_key`, so it must also be allowed to write specs and packages |
 | secret | `AWS_ROLE_ARN_PACKAGE_STATE` | OIDC role with access to the state bucket |
 | variable | `PACKAGE_TFSTATE_BUCKET` | S3 bucket for package stack states (can be set once for the organization). Publishing is skipped while it is unset |
 | variable | `PACKAGE_TFSTATE_REGION` | Region of that bucket |

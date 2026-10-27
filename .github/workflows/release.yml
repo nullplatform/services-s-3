@@ -15,11 +15,11 @@ name: release
 # pushed digest: the service as a package visible to every organization.
 #
 # Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
-# NP_ARTIFACT_NRN. Package publishing additionally needs secrets
-# PACKAGE_NP_API_KEY (publisher organization key allowed to write specs and
-# packages) + AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the tofu state bucket)
-# and variables PACKAGE_TFSTATE_BUCKET + PACKAGE_TFSTATE_REGION; it is
-# skipped until PACKAGE_TFSTATE_BUCKET is set.
+# NP_ARTIFACT_NRN. Package publishing reuses ARTIFACT_NP_API_KEY (the
+# publisher organization key, also allowed to write specs and packages) and
+# additionally needs secret AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the tofu
+# state bucket) and variables PACKAGE_TFSTATE_BUCKET + PACKAGE_TFSTATE_REGION;
+# it is skipped until PACKAGE_TFSTATE_BUCKET is set.
 on:
   push:
     branches:
@@ -50,5 +50,5 @@ jobs:
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
-      package_np_api_key: ${{ secrets.PACKAGE_NP_API_KEY }}
+      package_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
       package_state_role_arn: ${{ secrets.AWS_ROLE_ARN_PACKAGE_STATE }}
