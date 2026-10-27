@@ -22,7 +22,7 @@
 ################################################################################
 
 locals {
-  package_slug = "aws-s3-bucket"
+  package_slug = "nullplatform-aws-s3-bucket"
   version      = trimspace(file("${path.module}/../../version.txt"))
 }
 

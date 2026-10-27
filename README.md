@@ -103,7 +103,7 @@ The agent executing this service assumes the IAM role defined in [`aws-s3-bucket
 
 ## Install in your organization
 
-The service is published once as the package `aws-s3-bucket`, visible to every organization. You do not copy its specs: you install the package and use it read-only. Add the [installation module](./aws-s3-bucket/installation) to your stack at a release tag:
+The service is published once as the package `nullplatform-aws-s3-bucket` (specification "nullplatform AWS S3 Bucket"), visible to every organization. You do not copy its specs: you install the package and use it read-only. Add the [installation module](./aws-s3-bucket/installation) to your stack at a release tag:
 
 ```hcl
 terraform {
@@ -155,6 +155,15 @@ output "s3_installed_version" {
 
 The module creates the IAM role the service assumes, installs the package at `nrn` and creates the agent notification channel. It does not write your AWS IAM provider, because that provider belongs to your stack and its list is shared with other services: step 2 registers the role there. To upgrade, move `ref` to a newer tag. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for prerequisites, inputs and outputs.
 
+### Already registered with `service_definition`?
+
+Organizations that registered this service with `service_definition` have their own copy: specification "AWS S3 Bucket" (slug `aws-s3-bucket`) and a channel filtered to that slug. The global package uses other names (`nullplatform-aws-s3-bucket`), so both live side by side in one organization:
+
+- Existing services stay on your copy. A service cannot move to another specification.
+- Install the global package with the module above, and create new services from "nullplatform AWS S3 Bucket".
+- Reuse your IAM role: both specifications assume the role registered under selector `s3`, with the same permissions. Pass `iam_create_role = false` and skip step 2, keeping the `s3` entry your IAM provider already has.
+- Once no service uses your copy, remove its `service_definition` and channel from your stack.
+
 ### Global package or fork?
 
 **Use the global package.** It is the default, and the only way to keep receiving updates: every fix, new feature and security patch arrives as a new release, and you take it by moving `ref`. The specs, the code and how the service is installed stay maintained here. If something is missing or wrong, open an issue or a pull request in this repository, so every organization gets it.
@@ -164,7 +173,7 @@ The module creates the IAM role the service assumes, installs the package at `nr
 - **You become the publisher.** You build and register your own image, publish your own package in your organization, and maintain its specs, code and installation.
 - **Updates stop arriving.** Upstream fixes reach you only when you merge them into your fork yourself.
 - **There is no way back for existing services.** Services created from your fork's specification cannot be moved to the global one.
-- **Names must not collide.** Rename the package (`NP_PACKAGE_NAME` in the `Dockerfile`, `package_slug`), the service specification and the IAM role and selector, or your fork and the global package share one worker and one role.
+- **Names must not collide.** Give your fork its own `package_slug` and service specification name (the channel routes by the specification's slug, which comes from its name), and its own IAM role and selector, or your fork and the global package share one worker and one role.
 
 ## How the package is published
 

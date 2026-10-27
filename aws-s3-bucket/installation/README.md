@@ -1,6 +1,6 @@
 # aws-s3-bucket installation
 
-OpenTofu module that installs the `aws-s3-bucket` package in your organization. The package is published once for every organization; this module does not copy it. It creates:
+OpenTofu module that installs the `nullplatform-aws-s3-bucket` package (specification "nullplatform AWS S3 Bucket") in your organization. The package is published once for every organization; this module does not copy it. It creates:
 
 1. The IAM permissions role the service's workflows assume, in the AWS account your provider credentials point to ([`../specs/requirements/aws`](../specs/requirements/aws)).
 2. The installation of the package at `nrn`, at the version of the tag you reference.
@@ -59,6 +59,8 @@ output "s3_installed_version" {
 Step 2 is yours, not the module's: the service assumes the role it finds under selector `s3` in the NRN's `aws-iam-configuration` provider, and that provider belongs to your stack and is shared with other services.
 
 **Upgrade**: move `ref` to a newer tag and apply. New services are born with the new version; existing services keep theirs until they are moved one by one.
+
+Already registered this service with `service_definition`? Both can live in one organization: see [Already registered with `service_definition`?](../../README.md#already-registered-with-service_definition).
 
 Use this module to keep receiving updates. Fork the repository only when you need to extend the service substantially; see [Global package or fork?](../../README.md#global-package-or-fork) for what a fork costs.
 

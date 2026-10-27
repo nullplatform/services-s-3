@@ -15,7 +15,13 @@
 ################################################################################
 
 locals {
-  package_slug = "aws-s3-bucket"
+  # The nullplatform- prefix keeps the global package and its specification
+  # apart from the copies organizations registered from this repository with
+  # service_definition (specification "AWS S3 Bucket", slug aws-s3-bucket):
+  # agent channels route by specification slug, so the two must differ for
+  # both to live in one organization.
+  package_slug = "nullplatform-aws-s3-bucket"
+  service_path = "aws-s3-bucket"
   version      = trimspace(file("${path.module}/../../version.txt"))
 }
 
@@ -46,8 +52,10 @@ module "service_definition" {
   # Required by the module but not read with git_provider = "local"; set to
   # the release tag so the stack says which specs it published.
   repository_branch = "v${local.version}"
-  service_path      = local.package_slug
-  service_name      = "AWS S3 Bucket"
+  service_path      = local.service_path
+  # Slugifies to the package slug, so the installation's channel filter
+  # (specification slug = package slug) matches it.
+  service_name = "nullplatform AWS S3 Bucket"
 
   package = var.publish_package ? {
     slug       = local.package_slug
