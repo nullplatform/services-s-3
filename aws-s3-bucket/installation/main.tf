@@ -42,7 +42,7 @@ module "iam" {
 # 2. The package, installed at the version of this module's tag, and its agent
 #    channel.
 module "package" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.6.0"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.7.0"
 
   nrn                  = var.nrn
   package_slug         = local.package_slug
