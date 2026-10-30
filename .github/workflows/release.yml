@@ -1,8 +1,9 @@
 name: release
 
 # Full release pipeline in ONE chained run: release-please -> docker
-# build+push to ECR Public -> np artifact registration -> release finalized
-# with the artifact metadata (image, digest, pinned reference, artifact id).
+# build+push to ECR Public -> np artifact registration -> package publishing
+# -> release finalized with the artifact metadata (image, digest, pinned
+# reference, artifact id).
 #
 # Chained on purpose: release-please creates tags with GITHUB_TOKEN, and
 # GitHub never triggers workflows from bot-token events.
@@ -10,8 +11,15 @@ name: release
 # Recovery / backfill: dispatch with existing_tag to publish + finalize a tag
 # that already exists.
 #
+# Package publishing applies aws-s3-bucket/publish at the release tag with the
+# pushed digest: the service as a package visible to every organization.
+#
 # Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
-# NP_ARTIFACT_NRN.
+# NP_ARTIFACT_NRN. Package publishing reuses ARTIFACT_NP_API_KEY (the
+# publisher organization key, also allowed to write specs and packages) and
+# additionally needs secret AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the tofu
+# state bucket) and variables PACKAGE_TFSTATE_BUCKET + PACKAGE_TFSTATE_REGION;
+# it is skipped until PACKAGE_TFSTATE_BUCKET is set.
 on:
   push:
     branches:
@@ -26,7 +34,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  id-token: write   # OIDC auth against AWS for the ECR push
+  id-token: write   # OIDC auth against AWS for the ECR push and the package state
 
 jobs:
   release:
@@ -34,6 +42,13 @@ jobs:
     with:
       image_name: services/s3
       existing_tag: ${{ inputs.existing_tag || '' }}
+      # Keeps the ?ref=vX.Y.Z install examples in the READMEs on the new tag.
+      # It rewrites EVERY ref=vX.Y.Z in every README.md, so READMEs must not
+      # pin other repositories (tofu-modules refs live in .tf files only).
+      update_readme_versions: true
+      package_stack_dir: ${{ vars.PACKAGE_TFSTATE_BUCKET != '' && 'aws-s3-bucket/publish' || '' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
+      package_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
+      package_state_role_arn: ${{ secrets.AWS_ROLE_ARN_PACKAGE_STATE }}
