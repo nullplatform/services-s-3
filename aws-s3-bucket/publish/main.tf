@@ -61,13 +61,10 @@ module "service_definition" {
     slug       = local.package_slug
     version    = local.version
     visible_to = ["organization=*"]
-    # Checked at install, before anything is written: the region comes from
-    # the account's cloud provider; the IAM provider gets the role the
-    # installation creates, so it may not exist yet the first time.
-    requires_providers = [
-      { category = "cloud-providers" },
-      { category = "identity-access-control", optional = true },
-    ]
+    # No requires_providers: the API does not accept the declaration yet, and
+    # organizations that create their providers in a layer applied after the
+    # install could never satisfy a required one. The worker reads the cloud
+    # provider at runtime, as it always did.
     artifacts = [{
       name   = "worker-image"
       type   = "oci_image"
