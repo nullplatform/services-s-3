@@ -25,7 +25,7 @@ locals {
 }
 
 module "package" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/package_installation?ref=feat/package-installation-layered"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/package_installation?ref=v9.9.0"
 
   nrn             = var.nrn
   package_slug    = local.package_slug
