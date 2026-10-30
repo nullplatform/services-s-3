@@ -25,12 +25,14 @@ resource "aws_iam_access_key" "link" {
 # Inline policy scoped to the bucket (and optionally a path prefix)
 # ---------------------------------------------------------------------------
 
+data "aws_partition" "current" {}
+
 data "aws_iam_policy_document" "link" {
   statement {
     sid       = "BucketLevel"
     effect    = "Allow"
     actions   = local.bucket_actions
-    resources = [var.bucket_arn]
+    resources = [local.bucket_arn]
 
     dynamic "condition" {
       for_each = var.path_prefix == "" ? [] : [1]

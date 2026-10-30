@@ -41,12 +41,12 @@ fi
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
 SERVICE_ATTRS=$(echo "$CONTEXT" | jq -r '.service.attributes // {}')
 
+# The permissions module builds the bucket ARN from the name itself.
 BUCKET_NAME=$(echo "$SERVICE_ATTRS"   | jq -r '.bucket_name   // ""')
-BUCKET_ARN=$(echo "$SERVICE_ATTRS"    | jq -r '.bucket_arn    // ""')
 BUCKET_REGION=$(echo "$SERVICE_ATTRS" | jq -r '.bucket_region // ""')
 
-if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ARN" ]; then
-  echo "ERROR: bucket_name/bucket_arn not found in service attributes." >&2
+if [ -z "$BUCKET_NAME" ]; then
+  echo "ERROR: bucket_name not found in service attributes." >&2
   echo "       Has the bucket been created and write_service_outputs completed?" >&2
   exit 1
 fi
@@ -74,4 +74,15 @@ export TOFU_MODULE_DIR="$SERVICE_PATH/permissions"
 
 export TOFU_INIT_VARIABLES="-backend-config=bucket=${TFSTATE_BUCKET} -backend-config=key=services/aws-s3-bucket/${SERVICE_ID}/links/${LINK_ID}.tfstate -backend-config=region=${REGION} -backend-config=use_lockfile=true"
 
-export TOFU_VARIABLES="-var=link_id=${LINK_ID} -var=region=${REGION} -var=bucket_name=${BUCKET_NAME} -var=bucket_arn=${BUCKET_ARN} -var=iam_user_name=${IAM_USER_NAME} -var=access_level=${LINK_ACCESS_LEVEL:-read-write} -var=path_prefix=${LINK_PATH_PREFIX:-}"
+# The variables go to tofu as a JSON file, not as words on its command line: path_prefix and
+# access_level come from the link's attributes, so each value must reach tofu as one value.
+export TOFU_VAR_FILE="$OUTPUT_DIR/np.tfvars.json"
+jq -n \
+  --arg link_id       "$LINK_ID" \
+  --arg region        "$REGION" \
+  --arg bucket_name   "$BUCKET_NAME" \
+  --arg iam_user_name "$IAM_USER_NAME" \
+  --arg access_level  "${LINK_ACCESS_LEVEL:-read-write}" \
+  --arg path_prefix   "${LINK_PATH_PREFIX:-}" \
+  '{link_id: $link_id, region: $region, bucket_name: $bucket_name, iam_user_name: $iam_user_name,
+    access_level: $access_level, path_prefix: $path_prefix}' > "$TOFU_VAR_FILE"

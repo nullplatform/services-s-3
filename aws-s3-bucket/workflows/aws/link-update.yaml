@@ -42,7 +42,7 @@ steps:
         type: environment
       - name: TOFU_INIT_VARIABLES
         type: environment
-      - name: TOFU_VARIABLES
+      - name: TOFU_VAR_FILE
         type: environment
 
   - name: tofu

@@ -11,11 +11,11 @@ variable "region" {
 variable "bucket_name" {
   type        = string
   description = "Target S3 bucket name"
-}
 
-variable "bucket_arn" {
-  type        = string
-  description = "Target S3 bucket ARN"
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    error_message = "bucket_name must be a single S3 bucket name."
+  }
 }
 
 variable "iam_user_name" {
@@ -38,4 +38,11 @@ variable "path_prefix" {
   type        = string
   default     = ""
   description = "Optional S3 key prefix to scope the permissions (e.g., 'uploads/')"
+
+  # The prefix ends up inside the policy's resource ARN and s3:prefix condition, where * and ?
+  # are wildcards; only S3's safe characters and "/" keep it a literal prefix.
+  validation {
+    condition     = can(regex("^[A-Za-z0-9!_.'()/-]{0,512}$", var.path_prefix))
+    error_message = "path_prefix may only contain letters, digits, / and ! _ . ' ( ) -"
+  }
 }
