@@ -8,9 +8,5 @@ terraform {
       # and .components: the first provider release after 0.0.109.
       version = ">= 0.0.110"
     }
-    aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
-    }
   }
 }
