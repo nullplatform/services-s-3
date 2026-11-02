@@ -32,10 +32,10 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "required": [
-            "link_id"
+            "linkId"
           ],
           "properties": {
-            "link_id": {
+            "linkId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9-]{1,64}$",
               "title": "Link",
@@ -159,11 +159,11 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "required": [
-            "link_id",
+            "linkId",
             "key"
           ],
           "properties": {
-            "link_id": {
+            "linkId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9-]{1,64}$",
               "title": "Link",
@@ -227,11 +227,11 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "required": [
-            "link_id",
+            "linkId",
             "key"
           ],
           "properties": {
-            "link_id": {
+            "linkId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9-]{1,64}$",
               "title": "Link",
@@ -245,7 +245,7 @@
               "title": "Key",
               "description": "Relative object key (no leading or trailing slash)"
             },
-            "max_bytes": {
+            "maxBytes": {
               "type": "integer",
               "minimum": 1,
               "maximum": 262144,
@@ -291,11 +291,11 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "required": [
-            "link_id",
+            "linkId",
             "key"
           ],
           "properties": {
-            "link_id": {
+            "linkId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9-]{1,64}$",
               "title": "Link",
@@ -340,11 +340,11 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "required": [
-            "link_id",
+            "linkId",
             "key"
           ],
           "properties": {
-            "link_id": {
+            "linkId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9-]{1,64}$",
               "title": "Link",
