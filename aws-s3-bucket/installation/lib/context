@@ -65,6 +65,15 @@ providers_by_slug() {
 dimensions_query() { jq -r 'to_entries | map("\(.key):\(.value)") | join(",")' <<<"$1"; }
 target_key() { jq -r 'if length == 0 then "default" else (to_entries | sort_by(.key) | map(.value) | join("-")) end' <<<"$1"; }
 
+# What this installation already owns, from the previous run's report kept in
+# the state. Discovery must not "find" it: a found resource leaves the
+# configuration, and OpenTofu would destroy what it still holds in state.
+OWNED='[]'
+if [ -s "$NP_INSTALL_STATE" ]; then
+  OWNED=$(jq -c '[.outputs.resources.value[]? | select(.ownership == "owned") | { type, id }]' "$NP_INSTALL_STATE" 2>/dev/null || echo '[]')
+fi
+owned() { jq -e --arg t "$1" --arg id "$2" 'any(.[]; .type == $t and .id == $id)' <<<"$OWNED" >/dev/null; }
+
 # ── Targets: given, or one per cloud provider the NRN resolves ──────────────────
 TARGETS=$(ctx '.parameters.targets // empty')
 if [ -z "$TARGETS" ] || [ "$TARGETS" = "null" ]; then
@@ -83,7 +92,11 @@ for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
   iam_provider_id=$(jq -r '.iam_provider_id // empty' <<<"$target")
   if [ -z "$iam_provider_id" ]; then
     iam_provider_id=$(providers_by_slug aws-iam-configuration "$(dimensions_query "$dims")" | jq -r '.[0].id // empty')
-    if [ -n "$iam_provider_id" ]; then log "   target $key: IAM provider $iam_provider_id found, adopting it"; else log "   target $key: no IAM provider, one will be created"; fi
+    if [ -n "$iam_provider_id" ] && owned provider_config "$iam_provider_id"; then
+      iam_provider_id=''
+      log "   target $key: IAM provider is this installation's own"
+    fi
+    if [ -n "$iam_provider_id" ]; then log "   target $key: IAM provider $iam_provider_id found, adopting it"; else log "   target $key: no IAM provider; one will be created (or kept)"; fi
   fi
   role_arn=$(jq -r '.role_arn // empty' <<<"$target")
   if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created"; fi
