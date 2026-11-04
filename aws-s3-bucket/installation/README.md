@@ -26,13 +26,16 @@ The entrypoints (`install`, `update`, `uninstall`, `status`) take two environmen
 variables, the ones `np package install` and the agent will set:
 
 - `NP_INSTALL_CONTEXT`: JSON with `installation` (`id`, `nrn`, `package_slug`,
-  `version`), `agent` (`role_arn`, `tags`), `parameters` (`targets`,
-  `create_channel`) and `credentials.platform.api_key`.
+  `version`), `agent` (`role_arn`, `tags`) and `parameters` (`targets`,
+  `create_channel`). Data only, never a secret.
 - `NP_INSTALL_STATE`: path of the state file. The runner hands over the previous
   one and keeps the updated one; this module never needs a bucket of its own.
 
-AWS credentials are the runner's: a profile when run locally, the agent's role
-when run by the agent. Nothing is resolved here.
+Credentials come from the environment, the way the worker already gets them:
+`NULLPLATFORM_API_KEY` (what `np` and the Terraform provider read; the agent's
+`NP_API_KEY` is bridged to it) and the runner's AWS credentials (a profile when
+run locally, the agent's role when run by the agent). `NULLPLATFORM_HOST`
+points at another API host. Nothing is resolved here.
 
 Each entrypoint prints one JSON document on stdout, the installation's report:
 
@@ -48,10 +51,11 @@ parameter) or `adopted` (found and reused, never removed). Logs go to stderr.
 ## Running it by hand
 
 ```bash
+export NULLPLATFORM_API_KEY=…            # or NP_API_KEY, as the agent sets it
+export AWS_PROFILE=my-profile
 export NP_INSTALL_CONTEXT='{"installation":{"id":"…","nrn":"organization=…:account=…","package_slug":"nullplatform-aws-s3-bucket","version":"0.5.8"},
                             "agent":{"role_arn":"arn:aws:iam::123456789012:role/my-agent-role","tags":{"environment":"development"}},
-                            "parameters":{},
-                            "credentials":{"platform":{"api_key":"…"}}}'
+                            "parameters":{}}'
 export NP_INSTALL_STATE=/path/to/installation.tfstate
 aws-s3-bucket/installation/install
 ```

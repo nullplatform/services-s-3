@@ -14,7 +14,15 @@ fail() { log "❌ $*"; exit 1; }
 [ -n "${NP_INSTALL_STATE:-}" ] || fail "NP_INSTALL_STATE is not set (path of the state file the runner keeps)"
 for tool in jq curl tofu; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 
-NP_API_URL="${NP_API_URL:-https://api.nullplatform.com}"
+# Credentials come from the environment, never from the context: the same
+# convention the worker follows (the agent sets NP_API_KEY; np and the
+# Terraform provider read NULLPLATFORM_API_KEY). NULLPLATFORM_HOST is the
+# provider's own variable for the API host.
+if [ -z "${NULLPLATFORM_API_KEY:-}" ] && [ -n "${NP_API_KEY:-}" ]; then
+  export NULLPLATFORM_API_KEY="$NP_API_KEY"
+fi
+[ -n "${NULLPLATFORM_API_KEY:-}" ] || fail "NULLPLATFORM_API_KEY (or NP_API_KEY) is not set"
+NP_API_URL="https://${NULLPLATFORM_HOST:-api.nullplatform.com}"
 export NP_API_URL
 
 CONTEXT="$NP_INSTALL_CONTEXT"
@@ -24,10 +32,6 @@ INSTALLATION_NRN=$(ctx '.installation.nrn // empty')
 [ -n "$INSTALLATION_NRN" ] || fail "context has no installation.nrn"
 [ -n "$(ctx '.installation.id // empty')" ] || fail "context has no installation.id"
 [ -n "$(ctx '.agent.role_arn // empty')" ] || fail "context has no agent.role_arn"
-
-NULLPLATFORM_API_KEY=$(ctx '.credentials.platform.api_key // empty')
-[ -n "$NULLPLATFORM_API_KEY" ] || fail "context has no credentials.platform.api_key"
-export NULLPLATFORM_API_KEY
 
 # ── API access ──────────────────────────────────────────────────────────────────
 NP_TOKEN=$(curl -sf -X POST "$NP_API_URL/token" -H 'content-type: application/json' \
