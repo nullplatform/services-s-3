@@ -1,10 +1,9 @@
 #!/bin/bash
-# Shared by the entrypoints: turns NP_INSTALL_CONTEXT into the tfvars the root
-# module takes, resolving what the installer did not give (targets, IAM
-# providers, the IAM specification) through the API. Sourced, not executed.
-#
-# Exports: NULLPLATFORM_API_KEY, NP_API_URL, TF_WORKING_DIR, TF_STATE, TF_VARS_FILE.
-# Everything it prints goes to stderr; stdout is the installation's report.
+# Shared by the runner's entrypoints: turns NP_INSTALL_CONTEXT into the tfvars
+# the runner root takes, resolving through the API whatever the installer did
+# not give (targets, IAM providers). An organization with its own Terraform
+# fills those variables from its own outputs and never runs this. Sourced,
+# not executed. Everything it prints goes to stderr; stdout is the report.
 set -euo pipefail
 
 log() { echo "$*" >&2; }
@@ -67,7 +66,6 @@ providers_by_slug() {
 }
 
 dimensions_query() { jq -r 'to_entries | map("\(.key):\(.value)") | join(",")' <<<"$1"; }
-target_key() { jq -r 'if length == 0 then "default" else (to_entries | sort_by(.key) | map(.value) | join("-")) end' <<<"$1"; }
 
 # What this installation already owns, from the previous run's report kept in
 # the state. Discovery must not "find" it: a found resource leaves the
@@ -103,7 +101,7 @@ for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
     if [ -n "$iam_provider_id" ]; then log "   target $key: IAM provider $iam_provider_id found, adopting it"; else log "   target $key: no IAM provider; one will be created (or kept)"; fi
   fi
   role_arn=$(jq -r '.role_arn // empty' <<<"$target")
-  if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created"; fi
+  if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created (or kept)"; fi
   RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg role "$role_arn" --arg iam "$iam_provider_id" \
     '.[$k] = { dimensions: $dims, role_arn: (if $role == "" then null else $role end), iam_provider_id: (if $iam == "" then null else $iam end) }' <<<"$RESOLVED")
 done
@@ -111,14 +109,11 @@ done
 AWS_REGION_DEFAULT=$(jq -r '[.[] | .region // empty][0] // "us-east-1"' <<<"$TARGETS")
 
 # ── tfvars and working directory ────────────────────────────────────────────────
-INSTALLATION_ID=$(ctx '.installation.id')
-TF_WORKING_DIR="${NP_INSTALL_WORKDIR:-${TMPDIR:-/tmp}/np-installation-$INSTALLATION_ID}"
-mkdir -p "$TF_WORKING_DIR"
-MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cp "$MODULE_DIR"/*.tf "$TF_WORKING_DIR"/
-cp -R "$MODULE_DIR/policies" "$MODULE_DIR/scripts" "$TF_WORKING_DIR"/
+# The runner root is used in place: its module sources are relative paths.
+TF_WORKING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_STATE="$NP_INSTALL_STATE"
-TF_VARS_FILE="$TF_WORKING_DIR/installation.tfvars.json"
+INSTALLATION_ID=$(ctx '.installation.id')
+TF_VARS_FILE="${TMPDIR:-/tmp}/np-installation-$INSTALLATION_ID.tfvars.json"
 umask 077
 jq -n --argjson ctx "$CONTEXT" --argjson targets "$RESOLVED" --arg region "$AWS_REGION_DEFAULT" '{
   installation: { id: $ctx.installation.id, nrn: $ctx.installation.nrn,
