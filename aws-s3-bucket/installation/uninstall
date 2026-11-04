@@ -1,0 +1,10 @@
+#!/bin/bash
+# uninstall: remove what this installation owns. Provided and adopted
+# resources are not touched (an adopted IAM provider only loses this
+# package's entry). Prints the final report, with no resources, on stdout.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/context"
+
+log "🧹 Uninstalling $(ctx '.installation.package_slug') from $INSTALLATION_NRN"
+tofu_run destroy -input=false -auto-approve -state="$TF_STATE" -var-file="$TF_VARS_FILE" >&2
+echo '{ "outputs": {}, "resources": [], "missing": [] }'

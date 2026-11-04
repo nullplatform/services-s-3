@@ -1,0 +1,47 @@
+#!/bin/bash
+# Adds or removes ONE entry (selector → arn) in an existing IAM provider,
+# leaving every other entry as it is. Stands in for an entry endpoint the API
+# does not have yet: the provider is read, the list merged by selector and
+# written back as a whole, so two concurrent writers can still lose an update.
+#
+#   iam_role_entry upsert <provider id> <selector> <arn>
+#   iam_role_entry remove <provider id> <selector>
+#
+# Needs NP_TOKEN (or NULLPLATFORM_API_KEY to exchange) and NP_API_URL.
+set -euo pipefail
+
+verb="${1:-}" provider_id="${2:-}" selector="${3:-}" arn="${4:-}"
+[ -n "$verb" ] && [ -n "$provider_id" ] && [ -n "$selector" ] || { echo "usage: iam_role_entry upsert|remove <provider id> <selector> [arn]" >&2; exit 2; }
+
+NP_API_URL="${NP_API_URL:-https://api.nullplatform.com}"
+if [ -z "${NP_TOKEN:-}" ]; then
+  [ -n "${NULLPLATFORM_API_KEY:-}" ] || { echo "NP_TOKEN or NULLPLATFORM_API_KEY is required" >&2; exit 1; }
+  NP_TOKEN=$(curl -sf -X POST "$NP_API_URL/token" -H 'content-type: application/json' \
+    -d "{\"api_key\":\"$NULLPLATFORM_API_KEY\"}" | jq -r '.access_token // empty')
+  [ -n "$NP_TOKEN" ] || { echo "could not exchange the API key for a token" >&2; exit 1; }
+fi
+
+current=$(curl -sf "$NP_API_URL/provider/$provider_id" -H "authorization: Bearer $NP_TOKEN") \
+  || { echo "IAM provider $provider_id could not be read" >&2; exit 1; }
+
+case "$verb" in
+  upsert)
+    [ -n "$arn" ] || { echo "upsert needs an arn" >&2; exit 2; }
+    body=$(jq -c --arg sel "$selector" --arg arn "$arn" '
+      .attributes
+      | .iam_role_arns.arns = ([.iam_role_arns.arns[]? | select(.selector != $sel)] + [{ selector: $sel, arn: $arn }])
+      | { attributes: . }' <<<"$current")
+    ;;
+  remove)
+    body=$(jq -c --arg sel "$selector" '
+      .attributes
+      | .iam_role_arns.arns = [.iam_role_arns.arns[]? | select(.selector != $sel)]
+      | { attributes: . }' <<<"$current")
+    ;;
+  *) echo "unknown verb $verb" >&2; exit 2 ;;
+esac
+
+curl -sf -X PATCH "$NP_API_URL/provider/$provider_id" -H "authorization: Bearer $NP_TOKEN" \
+  -H 'content-type: application/json' -d "$body" >/dev/null \
+  || { echo "IAM provider $provider_id could not be updated" >&2; exit 1; }
+echo "   ✅ IAM provider $provider_id: entry $selector ${verb}ed" >&2

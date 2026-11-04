@@ -1,0 +1,125 @@
+#!/bin/bash
+# Shared by the entrypoints: turns NP_INSTALL_CONTEXT into the tfvars the root
+# module takes, resolving what the installer did not give (targets, IAM
+# providers, the IAM specification) through the API. Sourced, not executed.
+#
+# Exports: NULLPLATFORM_API_KEY, NP_API_URL, TF_WORKING_DIR, TF_STATE, TF_VARS_FILE.
+# Everything it prints goes to stderr; stdout is the installation's report.
+set -euo pipefail
+
+log() { echo "$*" >&2; }
+fail() { log "❌ $*"; exit 1; }
+
+[ -n "${NP_INSTALL_CONTEXT:-}" ] || fail "NP_INSTALL_CONTEXT is not set"
+[ -n "${NP_INSTALL_STATE:-}" ] || fail "NP_INSTALL_STATE is not set (path of the state file the runner keeps)"
+for tool in jq curl tofu; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+
+NP_API_URL="${NP_API_URL:-https://api.nullplatform.com}"
+export NP_API_URL
+
+CONTEXT="$NP_INSTALL_CONTEXT"
+ctx() { jq -r "$1" <<<"$CONTEXT"; }
+
+INSTALLATION_NRN=$(ctx '.installation.nrn // empty')
+[ -n "$INSTALLATION_NRN" ] || fail "context has no installation.nrn"
+[ -n "$(ctx '.installation.id // empty')" ] || fail "context has no installation.id"
+[ -n "$(ctx '.agent.role_arn // empty')" ] || fail "context has no agent.role_arn"
+
+NULLPLATFORM_API_KEY=$(ctx '.credentials.platform.api_key // empty')
+[ -n "$NULLPLATFORM_API_KEY" ] || fail "context has no credentials.platform.api_key"
+export NULLPLATFORM_API_KEY
+
+# ── API access ──────────────────────────────────────────────────────────────────
+NP_TOKEN=$(curl -sf -X POST "$NP_API_URL/token" -H 'content-type: application/json' \
+  -d "{\"api_key\":\"$NULLPLATFORM_API_KEY\"}" | jq -r '.access_token // empty')
+[ -n "$NP_TOKEN" ] || fail "could not exchange the API key for a token at $NP_API_URL"
+export NP_TOKEN
+
+np_get() { curl -sf "$NP_API_URL$1" -H "authorization: Bearer $NP_TOKEN"; }
+
+# Providers are listed at an exact NRN; the platform resolves them walking up
+# the hierarchy, so discovery does the same: the first level with a match wins.
+ancestors() {
+  local nrn="$1"
+  while [ -n "$nrn" ]; do
+    echo "$nrn"
+    [[ "$nrn" == *:* ]] || break
+    nrn="${nrn%:*}"
+  done
+}
+
+# providers_by_slug <specification slug> [dimensions as key:value,…] → JSON array
+providers_by_slug() {
+  local slug="$1" dimensions="${2:-}" nrn results
+  for nrn in $(ancestors "$INSTALLATION_NRN"); do
+    results=$(np_get "/provider?nrn=$nrn&specification_slug=$slug${dimensions:+&dimensions=$dimensions}&limit=100" \
+      | jq -c --arg nrn "$nrn" '[.results[]? | select(.nrn == $nrn)]')
+    if [ "$(jq 'length' <<<"$results")" -gt 0 ]; then
+      echo "$results"
+      return 0
+    fi
+  done
+  echo '[]'
+}
+
+dimensions_query() { jq -r 'to_entries | map("\(.key):\(.value)") | join(",")' <<<"$1"; }
+target_key() { jq -r 'if length == 0 then "default" else (to_entries | sort_by(.key) | map(.value) | join("-")) end' <<<"$1"; }
+
+# ── Targets: given, or one per cloud provider the NRN resolves ──────────────────
+TARGETS=$(ctx '.parameters.targets // empty')
+if [ -z "$TARGETS" ] || [ "$TARGETS" = "null" ]; then
+  log "🔍 Discovering targets: aws-configuration providers from $INSTALLATION_NRN"
+  CLOUD=$(providers_by_slug aws-configuration)
+  [ "$(jq 'length' <<<"$CLOUD")" -gt 0 ] || fail "no cloud provider (aws-configuration) resolves at $INSTALLATION_NRN: configure one there or above, or pass parameters.targets"
+  TARGETS=$(jq -c '[.[] | { key: (if (.dimensions | length) == 0 then "default" else (.dimensions | to_entries | sort_by(.key) | map(.value) | join("-")) end),
+                           value: { dimensions: .dimensions, region: .attributes.account.region } }] | from_entries' <<<"$CLOUD")
+fi
+
+# ── IAM provider per target: given, or discovered for the target's dimensions ───
+RESOLVED='{}'
+for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
+  target=$(jq -c --arg k "$key" '.[$k]' <<<"$TARGETS")
+  dims=$(jq -c '.dimensions // {}' <<<"$target")
+  iam_provider_id=$(jq -r '.iam_provider_id // empty' <<<"$target")
+  if [ -z "$iam_provider_id" ]; then
+    iam_provider_id=$(providers_by_slug aws-iam-configuration "$(dimensions_query "$dims")" | jq -r '.[0].id // empty')
+    if [ -n "$iam_provider_id" ]; then log "   target $key: IAM provider $iam_provider_id found, adopting it"; else log "   target $key: no IAM provider, one will be created"; fi
+  fi
+  role_arn=$(jq -r '.role_arn // empty' <<<"$target")
+  if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created"; fi
+  RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg role "$role_arn" --arg iam "$iam_provider_id" \
+    '.[$k] = { dimensions: $dims, role_arn: (if $role == "" then null else $role end), iam_provider_id: (if $iam == "" then null else $iam end) }' <<<"$RESOLVED")
+done
+
+AWS_REGION_DEFAULT=$(jq -r '[.[] | .region // empty][0] // "us-east-1"' <<<"$TARGETS")
+
+# ── tfvars and working directory ────────────────────────────────────────────────
+INSTALLATION_ID=$(ctx '.installation.id')
+TF_WORKING_DIR="${NP_INSTALL_WORKDIR:-${TMPDIR:-/tmp}/np-installation-$INSTALLATION_ID}"
+mkdir -p "$TF_WORKING_DIR"
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cp "$MODULE_DIR"/*.tf "$TF_WORKING_DIR"/
+cp -R "$MODULE_DIR/policies" "$MODULE_DIR/scripts" "$TF_WORKING_DIR"/
+TF_STATE="$NP_INSTALL_STATE"
+TF_VARS_FILE="$TF_WORKING_DIR/installation.tfvars.json"
+umask 077
+jq -n --argjson ctx "$CONTEXT" --argjson targets "$RESOLVED" --arg region "$AWS_REGION_DEFAULT" '{
+  installation: { id: $ctx.installation.id, nrn: $ctx.installation.nrn,
+                  package_slug: $ctx.installation.package_slug, version: $ctx.installation.version },
+  agent: { role_arn: $ctx.agent.role_arn, tags: ($ctx.agent.tags // {}) },
+  targets: $targets,
+  aws_region: $region,
+  create_channel: ($ctx.parameters.create_channel // true)
+}' > "$TF_VARS_FILE"
+export TF_WORKING_DIR TF_STATE TF_VARS_FILE
+
+tofu_run() {
+  tofu -chdir="$TF_WORKING_DIR" init -input=false >&2
+  tofu -chdir="$TF_WORKING_DIR" "$@"
+}
+
+# The report: tofu outputs in the contract's shape, on stdout.
+report() {
+  tofu -chdir="$TF_WORKING_DIR" output -json -state="$TF_STATE" \
+    | jq '{ outputs: (.outputs.value // {}), resources: (.resources.value // []), missing: (.missing.value // []) }'
+}

@@ -1,0 +1,5 @@
+#!/bin/bash
+# update: an install against the previous state. OpenTofu reconciles whatever
+# changed in the parameters or in this version of the module.
+set -euo pipefail
+exec "$(dirname "${BASH_SOURCE[0]}")/install" "$@"

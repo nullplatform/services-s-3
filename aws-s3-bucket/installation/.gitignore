@@ -1,0 +1,7 @@
+# Local runs of the entrypoints and of `tofu test`. The lock file is not kept:
+# the runner initializes providers for its own platform at install time.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars.json

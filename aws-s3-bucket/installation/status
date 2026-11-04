@@ -1,0 +1,15 @@
+#!/bin/bash
+# status: does what is installed still match what this version would install?
+# Prints { "drift": true|false } on stdout; changes nothing.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/context"
+
+set +e
+tofu_run plan -input=false -detailed-exitcode -state="$TF_STATE" -var-file="$TF_VARS_FILE" >&2
+code=$?
+set -e
+case "$code" in
+  0) echo '{ "drift": false }' ;;
+  2) echo '{ "drift": true }' ;;
+  *) exit "$code" ;;
+esac

@@ -1,0 +1,9 @@
+#!/bin/bash
+# install: create or reconcile everything this service needs in the
+# organization (README). Prints the installation's report on stdout.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/context"
+
+log "🚀 Installing $(ctx '.installation.package_slug') $(ctx '.installation.version') at $INSTALLATION_NRN"
+tofu_run apply -input=false -auto-approve -state="$TF_STATE" -var-file="$TF_VARS_FILE" >&2
+report
