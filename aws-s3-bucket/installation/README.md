@@ -74,6 +74,16 @@ nothing is created in IAM for that target: the role is registered as provided.
 - **The agent's role and tags** come in the context; the platform knows them,
   the package does not.
 
+## Known tightening point
+
+`policies/s3-iam.json` is the policy `specs/requirements/aws` ships today, kept
+identical so the role created here behaves like the one organizations already
+run. It lets the worker create per-link IAM users with `Resource: "*"`. Scoping
+it to a user path (`arn:aws:iam::*:user/nullplatform-s3/*`) and requiring a
+permissions boundary on `iam:CreateUser` and `iam:PutUserPolicy` is the right
+next step, but it needs the link workflow to create users under that path
+first, so it is a change to the service, not to this folder.
+
 ## Layout
 
 ```

@@ -45,6 +45,16 @@ variable "targets" {
     condition     = length(var.targets) > 0
     error_message = "At least one target is required: no cloud provider resolves at the installation NRN and none was given."
   }
+
+  validation {
+    condition     = alltrue([for target in var.targets : target.role_arn == null || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", target.role_arn))])
+    error_message = "role_arn must be an IAM role ARN (arn:aws:iam::<account>:role/<name>)."
+  }
+
+  validation {
+    condition     = alltrue([for target in var.targets : target.iam_provider_id == null || can(regex("^[A-Za-z0-9_-]+$", target.iam_provider_id))])
+    error_message = "iam_provider_id must be a provider id (letters, digits, '-' and '_')."
+  }
 }
 
 variable "create_channel" {

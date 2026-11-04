@@ -99,13 +99,24 @@ resource "terraform_data" "iam_role_entry" {
     arn         = local.role_arn[each.key]
   }
 
+  # Values reach the script through its environment, never interpolated into
+  # the shell line; variables.tf also pins their shape.
   provisioner "local-exec" {
-    command = "${path.module}/scripts/iam_role_entry upsert '${self.triggers_replace.provider_id}' '${self.triggers_replace.selector}' '${self.triggers_replace.arn}'"
+    command = "${path.module}/scripts/iam_role_entry upsert \"$PROVIDER_ID\" \"$SELECTOR\" \"$ROLE_ARN\""
+    environment = {
+      PROVIDER_ID = self.triggers_replace.provider_id
+      SELECTOR    = self.triggers_replace.selector
+      ROLE_ARN    = self.triggers_replace.arn
+    }
   }
 
   provisioner "local-exec" {
     when    = destroy
-    command = "${path.module}/scripts/iam_role_entry remove '${self.triggers_replace.provider_id}' '${self.triggers_replace.selector}'"
+    command = "${path.module}/scripts/iam_role_entry remove \"$PROVIDER_ID\" \"$SELECTOR\""
+    environment = {
+      PROVIDER_ID = self.triggers_replace.provider_id
+      SELECTOR    = self.triggers_replace.selector
+    }
   }
 }
 
