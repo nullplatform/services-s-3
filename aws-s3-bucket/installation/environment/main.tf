@@ -1,11 +1,10 @@
 ################################################################################
-# aws-s3-bucket — installation, one target (one AWS account)
+# aws-s3-bucket — installation, one environment (one dimension set)
 #
-# Everything the service needs in an organization is per account: the role
-# the worker assumes (what specs/requirements/aws is today), registered where
-# the runtime reads it, and the agent channel, since the agent is per
-# account. There is no platform-side module: a service has no scope type,
-# settings or schema of its own. Ownership rules:
+# What the runtime reads per environment, all on the platform: the IAM
+# provider entry naming the account's role and the agent channel. Two
+# environments in one account are two instances of this module taking the
+# same account/ output. Ownership rules:
 #   - what is created here is owned, and destroy removes it;
 #   - what the caller names is reused: an IAM provider only gets this
 #     package's entry, never a rewrite; a channel is left alone.
@@ -13,7 +12,9 @@
 
 locals {
   installation_suffix = substr(replace(var.installation.id, "-", ""), 0, 8)
-  role_arn            = coalesce(var.role_arn, try(aws_iam_role.s3[0].arn, null))
+
+  create_iam_provider = var.iam_provider_id == null
+  write_entry         = var.iam_provider_id != null && !var.role_from_entry
 
   channel_route = {
     "$or" = [
@@ -28,59 +29,17 @@ locals {
   })
 }
 
-# ── The role the worker assumes ──
+# ── IAM provider: where the runtime finds the role for these dimensions ──
 
-resource "aws_iam_role" "s3" {
-  count = var.role_arn == null ? 1 : 0
-
-  name        = "nullplatform-${var.installation.package_slug}-${local.installation_suffix}-${var.name}"
-  description = "Permissions role assumed by the nullplatform agent for the ${var.installation.package_slug} package (installation ${var.installation.id}, target ${var.name})"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = var.agent_role_arn }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = {
-    ManagedBy    = "nullplatform-package-installation"
-    Package      = var.installation.package_slug
-    Installation = var.installation.id
-    Target       = var.name
-  }
-}
-
-# Policies grouped by verb, not s3:*, to cover every read the AWS provider does
-# when it refreshes a bucket; Resource stays "*" so an organization can narrow it.
-resource "aws_iam_role_policy" "s3" {
-  count  = var.role_arn == null ? 1 : 0
-  name   = "s3"
-  role   = aws_iam_role.s3[0].name
-  policy = file("${path.module}/policies/s3.json")
-}
-
-# Per-link IAM users and access keys.
-resource "aws_iam_role_policy" "s3_iam" {
-  count  = var.role_arn == null ? 1 : 0
-  name   = "s3-iam"
-  role   = aws_iam_role.s3[0].name
-  policy = file("${path.module}/policies/s3-iam.json")
-}
-
-# ── Where the runtime reads it ──
-
-# A target with no IAM provider gets one, owned here, holding only this entry.
+# An environment with no IAM provider gets one, owned here, holding only this entry.
 resource "nullplatform_provider_config" "iam" {
-  count = var.iam_provider_id == null ? 1 : 0
+  count = local.create_iam_provider ? 1 : 0
 
   nrn        = var.installation.nrn
   type       = "aws-iam-configuration"
   dimensions = var.dimensions
   attributes = jsonencode({
-    iam_role_arns = { arns = [{ selector = "s3", arn = local.role_arn }] }
+    iam_role_arns = { arns = [{ selector = "s3", arn = var.role_arn }] }
   })
 }
 
@@ -89,12 +48,12 @@ resource "nullplatform_provider_config" "iam" {
 # resource would swap in here. Values reach the script through its
 # environment, never interpolated into the shell line.
 resource "terraform_data" "iam_role_entry" {
-  count = var.iam_provider_id == null ? 0 : 1
+  count = local.write_entry ? 1 : 0
 
   triggers_replace = {
     provider_id = var.iam_provider_id
     selector    = "s3"
-    arn         = local.role_arn
+    arn         = var.role_arn
   }
 
   provisioner "local-exec" {
@@ -116,9 +75,9 @@ resource "terraform_data" "iam_role_entry" {
   }
 }
 
-# ── The agent channel: package-exec to the agent of this account ──
-# One per target: it selects that agent by its tags and, when the target has
-# dimensions, routes only the services in them.
+# ── The agent channel: package-exec to the agent serving this environment ──
+# It selects the agent by its tags and, when the environment has dimensions,
+# routes only the services in them.
 
 resource "nullplatform_notification_channel" "worker" {
   count = var.create_channel && var.channel_id == null ? 1 : 0

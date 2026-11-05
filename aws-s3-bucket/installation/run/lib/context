@@ -1,9 +1,11 @@
 #!/bin/bash
 # Shared by the runner's entrypoints: turns NP_INSTALL_CONTEXT into the tfvars
 # the runner root takes, resolving through the API whatever the installer did
-# not give (targets, IAM providers). An organization with its own Terraform
-# fills those variables from its own outputs and never runs this. Sourced,
-# not executed. Everything it prints goes to stderr; stdout is the report.
+# not give: the environments, the account's role when an IAM provider already
+# lists one, and per environment its IAM provider and channel. An
+# organization with its own Terraform fills those variables from its own
+# outputs and never runs this. Sourced, not executed. Everything it prints
+# goes to stderr; stdout is the report.
 set -euo pipefail
 
 log() { echo "$*" >&2; }
@@ -76,44 +78,72 @@ if [ -s "$NP_INSTALL_STATE" ]; then
 fi
 owned() { jq -e --arg t "$1" --arg id "$2" 'any(.[]; .type == $t and .id == $id)' <<<"$OWNED" >/dev/null; }
 
-# ── Targets: given, or one per cloud provider the NRN resolves ──────────────────
-TARGETS=$(ctx '.parameters.targets // empty')
-if [ -z "$TARGETS" ] || [ "$TARGETS" = "null" ]; then
-  log "🔍 Discovering targets: aws-configuration providers from $INSTALLATION_NRN"
+# ── Environments: given, or one per cloud provider the NRN resolves ────────────
+ENVIRONMENTS=$(ctx '.parameters.environments // empty')
+if [ -z "$ENVIRONMENTS" ] || [ "$ENVIRONMENTS" = "null" ]; then
+  log "🔍 Discovering environments: aws-configuration providers from $INSTALLATION_NRN"
   CLOUD=$(providers_by_slug aws-configuration)
-  [ "$(jq 'length' <<<"$CLOUD")" -gt 0 ] || fail "no cloud provider (aws-configuration) resolves at $INSTALLATION_NRN: configure one there or above, or pass parameters.targets"
-  TARGETS=$(jq -c '[.[] | { key: (if (.dimensions | length) == 0 then "default" else (.dimensions | to_entries | sort_by(.key) | map(.value) | join("-")) end),
-                           value: { dimensions: .dimensions, region: .attributes.account.region } }] | from_entries' <<<"$CLOUD")
+  [ "$(jq 'length' <<<"$CLOUD")" -gt 0 ] || fail "no cloud provider (aws-configuration) resolves at $INSTALLATION_NRN: configure one there or above, or pass parameters.environments"
+  ENVIRONMENTS=$(jq -c '[.[] | { key: (if (.dimensions | length) == 0 then "default" else (.dimensions | to_entries | sort_by(.key) | map(.value) | join("-")) end),
+                                value: { dimensions: .dimensions, region: .attributes.account.region } }] | from_entries' <<<"$CLOUD")
 fi
+AWS_REGION=$(jq -r '[.[] | .region // empty][0] // "us-east-1"' <<<"$ENVIRONMENTS")
 
-# Channels are per target (the agent is per account): the ones that already
-# route this package at the NRN, matched below by dimensions.
+# ── The account: given, or what an environment's provider already names ────────
+# The runner's AWS provider is one account, so its role is resolved once. An
+# environment whose IAM provider already lists one under selector "s3" fills
+# it in for the account, and so for every other environment.
+ACCOUNT_NAME=$(param account.name); ACCOUNT_NAME="${ACCOUNT_NAME:-default}"
+ROLE_ARN=$(param account.role_arn)
+[ -n "$ROLE_ARN" ] && log "   account $ACCOUNT_NAME: role provided"
+
+# Channels are per environment: the ones that already route this package at
+# the NRN, matched below by dimensions.
 PACKAGE_SLUG=$(ctx '.installation.package_slug // empty')
 CHANNELS=$(np_get "/notification/channel?nrn=$INSTALLATION_NRN&type=agent&limit=100" \
   | jq -c --arg nrn "$INSTALLATION_NRN" --arg pkg "$PACKAGE_SLUG" \
     '[.results[]? | select(.nrn == $nrn and .status == "active" and (.configuration.command.data.package // "") == $pkg) | { id, filters: (.filters | tojson) }]')
 
-# ── Per target: IAM provider and channel, given or discovered for its dimensions ─
+# ── Per environment: IAM provider and channel, given or discovered for its dimensions ─
 RESOLVED='{}'
-for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
-  target=$(jq -c --arg k "$key" '.[$k]' <<<"$TARGETS")
-  dims=$(jq -c '.dimensions // {}' <<<"$target")
-  iam_provider_id=$(jq -r '.iam_provider_id // empty' <<<"$target")
+for key in $(jq -r 'keys[]' <<<"$ENVIRONMENTS"); do
+  environment=$(jq -c --arg k "$key" '.[$k]' <<<"$ENVIRONMENTS")
+  dims=$(jq -c '.dimensions // {}' <<<"$environment")
+
+  iam_provider_id=$(jq -r '.iam_provider_id // empty' <<<"$environment")
+  entry_role=''
   if [ -z "$iam_provider_id" ]; then
     iam_provider_id=$(providers_by_slug aws-iam-configuration "$(dimensions_query "$dims")" | jq -r '.[0].id // empty')
     if [ -n "$iam_provider_id" ] && owned provider_config "$iam_provider_id"; then
       iam_provider_id=''
-      log "   target $key: IAM provider is this installation's own"
+      log "   environment $key: IAM provider is this installation's own"
     fi
-    if [ -n "$iam_provider_id" ]; then log "   target $key: IAM provider $iam_provider_id found, adopting it"; else log "   target $key: no IAM provider; one will be created (or kept)"; fi
   fi
-  role_arn=$(jq -r '.role_arn // empty' <<<"$target")
-  if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created (or kept)"; fi
+  if [ -n "$iam_provider_id" ]; then
+    # The list carries no attributes: read the provider to see its entries.
+    iam=$(np_get "/provider/$iam_provider_id" || true)
+    log "   environment $key: IAM provider $iam_provider_id found, reusing it"
+    entry_role=$(jq -r '[.attributes.iam_role_arns.arns[]? | select(.selector == "s3")][0].arn // empty' <<<"${iam:-null}")
+    if [ -n "$entry_role" ] && owned aws_iam_role "$entry_role"; then
+      entry_role=''
+      log "   environment $key: the s3 entry is this installation's own role"
+    fi
+    # An existing entry is never overwritten: the environment keeps the role it
+    # lists, and the account takes it when it has none of its own yet.
+    if [ -n "$entry_role" ] && [ -z "$ROLE_ARN" ]; then
+      ROLE_ARN="$entry_role"
+      log "   account $ACCOUNT_NAME: role found under selector s3 of environment $key, reusing it"
+    elif [ -n "$entry_role" ] && [ "$entry_role" != "$ROLE_ARN" ]; then
+      log "   environment $key: its s3 entry names another role ($entry_role); left as it is"
+    fi
+  else
+    log "   environment $key: no IAM provider; one will be created (or kept)"
+  fi
 
   # Channel: given, or the one already routing this package for these
-  # dimensions (every dimension named in its filters; none when the target
-  # has none), unless it is this installation's own.
-  channel_id=$(jq -r '.channel_id // empty' <<<"$target")
+  # dimensions (every dimension named in its filters; none when the
+  # environment has none), unless it is this installation's own.
+  channel_id=$(jq -r '.channel_id // empty' <<<"$environment")
   if [ -z "$channel_id" ]; then
     while IFS=$'\t' read -r cid cfilters; do
       [ -n "$cid" ] || continue
@@ -128,17 +158,16 @@ for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
       fi
       channel_id="$cid"; break
     done < <(jq -r '.[] | "\(.id)\t\(.filters)"' <<<"$CHANNELS")
-    if [ -n "$channel_id" ] && owned notification_channel "$channel_id"; then channel_id=''; log "   target $key: channel is this installation's own"; fi
-    if [ -n "$channel_id" ]; then log "   target $key: channel $channel_id already routes the package for these dimensions, reusing it"; else log "   target $key: channel will be created (or kept)"; fi
+    if [ -n "$channel_id" ] && owned notification_channel "$channel_id"; then channel_id=''; log "   environment $key: channel is this installation's own"; fi
+    if [ -n "$channel_id" ]; then log "   environment $key: channel $channel_id already routes the package for these dimensions, reusing it"; else log "   environment $key: channel will be created (or kept)"; fi
   fi
-  agent_tags=$(jq -c '.agent_tags // empty' <<<"$target")
+  agent_tags=$(jq -c '.agent_tags // empty' <<<"$environment")
 
-  RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg role "$role_arn" --arg iam "$iam_provider_id" --arg channel "$channel_id" --argjson tags "${agent_tags:-null}" '
+  RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg entry "$entry_role" --arg iam "$iam_provider_id" --arg channel "$channel_id" --argjson tags "${agent_tags:-null}" '
     def nz: if . == "" then null else . end;
-    .[$k] = { dimensions: $dims, role_arn: ($role | nz), iam_provider_id: ($iam | nz), channel_id: ($channel | nz), agent_tags: $tags }' <<<"$RESOLVED")
+    .[$k] = { dimensions: $dims, role_from_entry: ($entry != ""), iam_provider_id: ($iam | nz), channel_id: ($channel | nz), agent_tags: $tags }' <<<"$RESOLVED")
 done
-
-AWS_REGION_DEFAULT=$(jq -r '[.[] | .region // empty][0] // "us-east-1"' <<<"$TARGETS")
+[ -n "$ROLE_ARN" ] || log "   account $ACCOUNT_NAME: role will be created (or kept)"
 
 # ── tfvars and working directory ────────────────────────────────────────────────
 # The runner root is used in place: its module sources are relative paths.
@@ -147,14 +176,17 @@ TF_STATE="$NP_INSTALL_STATE"
 INSTALLATION_ID=$(ctx '.installation.id')
 TF_VARS_FILE="${TMPDIR:-/tmp}/np-installation-$INSTALLATION_ID.tfvars.json"
 umask 077
-jq -n --argjson ctx "$CONTEXT" --argjson targets "$RESOLVED" --arg region "$AWS_REGION_DEFAULT" '{
-  installation: { id: $ctx.installation.id, nrn: $ctx.installation.nrn,
-                  package_slug: $ctx.installation.package_slug, version: $ctx.installation.version },
-  agent: { role_arn: $ctx.agent.role_arn, tags: ($ctx.agent.tags // {}) },
-  targets: $targets,
-  aws_region: $region,
-  create_channel: ($ctx.parameters.create_channel // true)
-}' > "$TF_VARS_FILE"
+jq -n --argjson ctx "$CONTEXT" --argjson environments "$RESOLVED" --arg region "$AWS_REGION" --arg account "$ACCOUNT_NAME" --arg role "$ROLE_ARN" '
+  def nz: if . == "" then null else . end;
+  {
+    installation: { id: $ctx.installation.id, nrn: $ctx.installation.nrn,
+                    package_slug: $ctx.installation.package_slug, version: $ctx.installation.version },
+    agent: { role_arn: $ctx.agent.role_arn, tags: ($ctx.agent.tags // {}) },
+    account: { name: $account, role_arn: ($role | nz) },
+    environments: $environments,
+    aws_region: $region,
+    create_channel: ($ctx.parameters.create_channel // true)
+  }' > "$TF_VARS_FILE"
 export TF_WORKING_DIR TF_STATE TF_VARS_FILE
 
 tofu_run() {

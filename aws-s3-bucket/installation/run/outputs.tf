@@ -2,13 +2,14 @@
 
 output "outputs" {
   value = {
-    role_arn   = { for name, target in module.target : name => target.role_arn }
-    channel_id = { for name, target in module.target : name => target.channel_id }
+    role_arn        = module.account.role_arn
+    iam_provider_id = { for name, environment in module.environment : name => environment.iam_provider_id }
+    channel_id      = { for name, environment in module.environment : name => environment.channel_id }
   }
 }
 
 output "resources" {
-  value = flatten([for target in module.target : target.resources])
+  value = concat(module.account.resources, flatten([for environment in module.environment : environment.resources]))
 }
 
 output "missing" {
