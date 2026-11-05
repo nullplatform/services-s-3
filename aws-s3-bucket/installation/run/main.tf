@@ -3,9 +3,10 @@
 #
 # For installing without a Terraform repository of one's own: what a person
 # or `np package install` runs. It configures the providers from the
-# environment and calls the two modules; one AWS provider, so one account.
-# An organization with its own Terraform calls ../ and ../target directly,
-# with its provider aliases, and does not need this.
+# environment and calls the target module once per dimension set; one AWS
+# provider, so one account. An organization with its own Terraform calls
+# ../target directly, once per account with its provider alias, and does not
+# need this.
 ################################################################################
 
 terraform {
@@ -33,14 +34,6 @@ provider "aws" {
 # NULLPLATFORM_API_KEY from the environment.
 provider "nullplatform" {}
 
-module "installation" {
-  source = "../"
-
-  installation   = var.installation
-  agent_tags     = var.agent.tags
-  create_channel = var.create_channel
-}
-
 module "target" {
   source   = "../target"
   for_each = var.targets
@@ -49,6 +42,9 @@ module "target" {
   name            = each.key
   dimensions      = each.value.dimensions
   agent_role_arn  = var.agent.role_arn
+  agent_tags      = coalesce(each.value.agent_tags, var.agent.tags)
   role_arn        = each.value.role_arn
   iam_provider_id = each.value.iam_provider_id
+  channel_id      = each.value.channel_id
+  create_channel  = var.create_channel
 }

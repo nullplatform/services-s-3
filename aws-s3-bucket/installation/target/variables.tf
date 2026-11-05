@@ -14,7 +14,7 @@ variable "name" {
 }
 
 variable "dimensions" {
-  description = "Dimensions this target serves; the IAM provider created here carries them so the runtime resolves it for services in that environment."
+  description = "Dimensions this target serves; the IAM provider created here carries them so the runtime resolves it for services in that environment, and the channel routes only those services."
   type        = map(string)
   default     = {}
 }
@@ -22,6 +22,12 @@ variable "dimensions" {
 variable "agent_role_arn" {
   description = "IAM role the agent's workers run with in this account; the created role trusts it."
   type        = string
+}
+
+variable "agent_tags" {
+  description = "Tags of the agent that runs this package's worker in this account; the channel selects it by them. Required with create_channel."
+  type        = map(string)
+  default     = {}
 }
 
 # ── Each one received, or provisioned when absent ──
@@ -45,5 +51,22 @@ variable "iam_provider_id" {
   validation {
     condition     = var.iam_provider_id == null || can(regex("^[A-Za-z0-9_-]+$", var.iam_provider_id))
     error_message = "iam_provider_id must be a provider id (letters, digits, '-' and '_')."
+  }
+}
+
+variable "channel_id" {
+  description = "An agent channel that already routes this package for these dimensions, reused as is. Null creates one when create_channel is on."
+  type        = string
+  default     = null
+}
+
+variable "create_channel" {
+  description = "Create the agent channel that routes this target's services to the package worker. Off when the organization creates channels elsewhere."
+  type        = bool
+  default     = true
+
+  validation {
+    condition     = !(var.create_channel && var.channel_id == null) || length(var.agent_tags) > 0
+    error_message = "Creating the channel needs agent_tags: the channel selects the agent by them."
   }
 }

@@ -86,7 +86,14 @@ if [ -z "$TARGETS" ] || [ "$TARGETS" = "null" ]; then
                            value: { dimensions: .dimensions, region: .attributes.account.region } }] | from_entries' <<<"$CLOUD")
 fi
 
-# ── IAM provider per target: given, or discovered for the target's dimensions ───
+# Channels are per target (the agent is per account): the ones that already
+# route this package at the NRN, matched below by dimensions.
+PACKAGE_SLUG=$(ctx '.installation.package_slug // empty')
+CHANNELS=$(np_get "/notification/channel?nrn=$INSTALLATION_NRN&type=agent&limit=100" \
+  | jq -c --arg nrn "$INSTALLATION_NRN" --arg pkg "$PACKAGE_SLUG" \
+    '[.results[]? | select(.nrn == $nrn and .status == "active" and (.configuration.command.data.package // "") == $pkg) | { id, filters: (.filters | tojson) }]')
+
+# ── Per target: IAM provider and channel, given or discovered for its dimensions ─
 RESOLVED='{}'
 for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
   target=$(jq -c --arg k "$key" '.[$k]' <<<"$TARGETS")
@@ -102,8 +109,33 @@ for key in $(jq -r 'keys[]' <<<"$TARGETS"); do
   fi
   role_arn=$(jq -r '.role_arn // empty' <<<"$target")
   if [ -n "$role_arn" ]; then log "   target $key: role provided"; else log "   target $key: role will be created (or kept)"; fi
-  RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg role "$role_arn" --arg iam "$iam_provider_id" \
-    '.[$k] = { dimensions: $dims, role_arn: (if $role == "" then null else $role end), iam_provider_id: (if $iam == "" then null else $iam end) }' <<<"$RESOLVED")
+
+  # Channel: given, or the one already routing this package for these
+  # dimensions (every dimension named in its filters; none when the target
+  # has none), unless it is this installation's own.
+  channel_id=$(jq -r '.channel_id // empty' <<<"$target")
+  if [ -z "$channel_id" ]; then
+    while IFS=$'\t' read -r cid cfilters; do
+      [ -n "$cid" ] || continue
+      if [ "$(jq 'length' <<<"$dims")" -eq 0 ]; then
+        [[ "$cfilters" == *dimensions.* ]] && continue
+      else
+        match=true
+        while IFS=$'\t' read -r dk dv; do
+          [[ "$cfilters" == *"service.dimensions.$dk"*"\"$dv\""* ]] || match=false
+        done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$dims")
+        [ "$match" = true ] || continue
+      fi
+      channel_id="$cid"; break
+    done < <(jq -r '.[] | "\(.id)\t\(.filters)"' <<<"$CHANNELS")
+    if [ -n "$channel_id" ] && owned notification_channel "$channel_id"; then channel_id=''; log "   target $key: channel is this installation's own"; fi
+    if [ -n "$channel_id" ]; then log "   target $key: channel $channel_id already routes the package for these dimensions, reusing it"; else log "   target $key: channel will be created (or kept)"; fi
+  fi
+  agent_tags=$(jq -c '.agent_tags // empty' <<<"$target")
+
+  RESOLVED=$(jq -c --arg k "$key" --argjson dims "$dims" --arg role "$role_arn" --arg iam "$iam_provider_id" --arg channel "$channel_id" --argjson tags "${agent_tags:-null}" '
+    def nz: if . == "" then null else . end;
+    .[$k] = { dimensions: $dims, role_arn: ($role | nz), iam_provider_id: ($iam | nz), channel_id: ($channel | nz), agent_tags: $tags }' <<<"$RESOLVED")
 done
 
 AWS_REGION_DEFAULT=$(jq -r '[.[] | .region // empty][0] // "us-east-1"' <<<"$TARGETS")
