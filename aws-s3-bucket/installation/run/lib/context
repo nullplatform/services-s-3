@@ -28,6 +28,7 @@ export NP_API_URL
 
 CONTEXT="$NP_INSTALL_CONTEXT"
 ctx() { jq -r "$1" <<<"$CONTEXT"; }
+param() { jq -r ".parameters.$1 // empty" <<<"$CONTEXT"; }
 
 INSTALLATION_NRN=$(ctx '.installation.nrn // empty')
 [ -n "$INSTALLATION_NRN" ] || fail "context has no installation.nrn"
