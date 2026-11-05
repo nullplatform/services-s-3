@@ -117,16 +117,17 @@ module "service_definition_aws_s3_bucket" {
 }
 
 module "service_definition_channel_association_aws_s3_bucket" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v1.51.0"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v8.7.0"
 
   nrn                          = var.nrn
-  api_key                      = module.service_notification_api_key.api_key
   tags_selectors               = var.tags_selectors
   service_specification_slug   = module.service_definition_aws_s3_bucket.service_specification_slug
   repository_service_spec_repo = "nullplatform/services-s-3"
   service_path                 = "aws-s3-bucket"
 }
 ```
+
+The channel association takes no `api_key` (tofu-modules `v8.6.0` or later): nullplatform creates and manages the channel's credential, an API key scoped to dispatching commands to agents. The identity running the apply must be able to assign the `controlplane:agent-dispatcher` role (`admin`, `ops` or `secops`).
 
 ## Important considerations
 
