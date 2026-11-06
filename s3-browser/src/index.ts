@@ -53,6 +53,7 @@ const handler = createHandler({
     allowWrites: env.S3_BROWSER_ALLOW_WRITES === "1",
     // DEMO ONLY, never in a customer organization: see catalog/LINK_MODE.md.
     unverifiedEntityBinding: env.S3_BROWSER_UNVERIFIED_ENTITY_BINDING === "1",
+    legacyModes: env.S3_BROWSER_LEGACY_MODES === "1",
   },
 });
 // Link mode: catalog executions of this specification open S3 with the link's own keys.

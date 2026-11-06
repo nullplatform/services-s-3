@@ -21,6 +21,13 @@ export interface HandlerConfig {
    * `entity_nrn` yet, take the entity from the envelope's application id. Off by default.
    */
   unverifiedEntityBinding?: boolean;
+  /**
+   * The modes that open S3 with the worker's own AWS identity (a direct command, a service action,
+   * the aws-s3-bucket catalog entity): no catalog execution and no link check stand behind them, so
+   * anyone who can send the agent a command reaches every bucket that identity can. Off by default
+   * (S3_BROWSER_LEGACY_MODES=1 turns them on); link mode is unaffected.
+   */
+  legacyModes?: boolean;
   /** Where the fallback's warning goes (stderr by default). */
   warn?: (message: string) => void;
 }
@@ -217,6 +224,7 @@ export function createHandler({ platform, store, config }: { platform: Platform;
         throw scrub(error, secrets);
       }
     }
+    if (!config.legacyModes) throw new CommandError("only link mode is enabled on this worker (S3_BROWSER_LEGACY_MODES=1 enables the agent-identity modes)", 400, "LINK_MODE_ONLY");
     if (command.action === "read-object") throw new CommandError("read-object is only available in link mode", 400, "UNKNOWN_ACTION");
     const resolved = command.catalog ?? bucketFromEnvelope(command.service, config.specifications) ?? (await resolveBucket(platform, command.service_id, config.specifications));
     return runOnTarget(store, command, { bucket: resolved.bucket, region: resolved.region });

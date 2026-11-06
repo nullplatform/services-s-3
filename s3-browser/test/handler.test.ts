@@ -48,7 +48,7 @@ const store: ObjectStore = {
   },
 };
 
-const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
+const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false, legacyModes: true } });
 const parse = (result: { data: { stdout: string } }) => JSON.parse(result.data.stdout);
 
 describe("runCommand", () => {
@@ -78,7 +78,7 @@ describe("runCommand", () => {
   });
 
   test("a worker without credentials is a failed execution", async () => {
-    const noKey = createHandler({ platform: createPlatform({ apiKey: undefined }), store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
+    const noKey = createHandler({ platform: createPlatform({ apiKey: undefined }), store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false, legacyModes: true } });
     const result = await runCommand(JSON.stringify({ action: "list-objects", service_id: "svc-bucket" }), noKey);
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe("NO_CREDENTIALS");
@@ -86,7 +86,7 @@ describe("runCommand", () => {
   });
 
   test("delete works once writes are allowed", async () => {
-    const writable = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+    const writable = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true, legacyModes: true } });
     const result = await runCommand(JSON.stringify({ action: "delete-object", service_id: "svc-bucket", key: "docs/a.txt" }), writable);
     expect(parse(result)).toEqual({ key: "docs/a.txt" });
   });
@@ -122,7 +122,7 @@ describe("service-action envelope", () => {
   };
 
   test("prefers the attributes the platform sent over a lookup", async () => {
-    const direct = createHandler({ platform: { getService: never, getSpecification: never, getLink: never, getExecution: never, getEntity: never }, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false } });
+    const direct = createHandler({ platform: { getService: never, getSpecification: never, getLink: never, getExecution: never, getEntity: never }, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: false, legacyModes: true } });
     const result = await runCommand(envelope("list-objects", { prefix: "docs/" }), direct);
     expect(result.success).toBe(true);
     expect(parse(result)).toMatchObject({ bucket: "bucket-from-envelope", region: "us-east-2" });
@@ -152,7 +152,7 @@ describe("service-action envelope", () => {
     const refused = await runCommand(envelope("delete-object", { key: "docs/a.txt" }), handler);
     expect(parse(refused).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
     expect(calls.length).toBe(before);
-    const writable = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+    const writable = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true, legacyModes: true } });
     expect(parse(await runCommand(envelope("delete-object", { key: "docs/a.txt" }), writable))).toEqual({ key: "docs/a.txt" });
   });
 });
@@ -189,7 +189,7 @@ describe("catalog envelope", () => {
   test("delete-object is gated by the write switch", async () => {
     const gated = await run({ slug: "delete-object", input: { key: "a.txt" } });
     expect(parse(gated).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
-    const open = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+    const open = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true, legacyModes: true } });
     expect(parse(await run({ slug: "delete-object", input: { key: "a.txt" } }, open))).toEqual({ key: "a.txt" });
   });
 });

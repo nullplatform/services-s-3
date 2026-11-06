@@ -116,7 +116,7 @@ const linkPayload = (id: string, slug: string, input: Record<string, unknown>, e
 
 const parse = (result: { data: { stdout: string } }) => JSON.parse(result.data.stdout);
 
-function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, extra: { unverifiedEntityBinding?: boolean } = {}) {
+function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, extra: { unverifiedEntityBinding?: boolean; legacyModes?: boolean } = {}) {
   const { platform, seen } = fakePlatform(links);
   const { store, calls } = recordingStore();
   const warnings: string[] = [];
@@ -293,10 +293,23 @@ describe("link mode: handler", () => {
   });
 
   test("the bucket-entity catalog and service modes ignore links", async () => {
-    const { handler, seen } = setup();
+    const { handler, seen } = setup(undefined, false, { legacyModes: true });
     const catalog = JSON.stringify({ notification: { action: "catalog:action:create", slug: "list-objects", input: { link_id: "lnk-1" }, entity: { bucket_name: "entity-bucket", region: "us-east-1" }, specification: { slug: "aws-s3-bucket" }, entity_nrn: APP_NRN } });
     expect(parse(await runCommand(catalog, handler)).bucket).toBe("entity-bucket");
     expect(seen).toEqual([]);
+  });
+
+  test("by default only link mode runs: the agent-identity modes are refused before any platform or S3 call", async () => {
+    const { handler, seen, calls } = setup();
+    const catalog = JSON.stringify({ notification: { action: "catalog:action:create", slug: "list-objects", input: { link_id: "lnk-1" }, entity: { bucket_name: "entity-bucket", region: "us-east-1" }, specification: { slug: "aws-s3-bucket" }, entity_nrn: APP_NRN } });
+    const direct = JSON.stringify({ action: "list-objects", service_id: "svc-1", prefix: "" });
+    for (const payload of [catalog, direct]) {
+      const result = await runCommand(payload, handler);
+      expect(result.success).toBe(true);
+      expect(parse(result).error).toMatchObject({ status: 400, code: "LINK_MODE_ONLY" });
+    }
+    expect(seen).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 
