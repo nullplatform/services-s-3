@@ -190,6 +190,7 @@ Checks, in order (all mandatory):
 | `OUTSIDE_PREFIX` | 403 | prefix or key outside `path_prefix` |
 | `WRITE_NOT_ALLOWED` | 403 | delete on a `read` link |
 | `WRITES_DISABLED` | 405 | delete without `S3_BROWSER_ALLOW_WRITES=1` |
+| `LINK_MODE_ONLY` | 400 | a non-link command while `S3_BROWSER_LEGACY_MODES` is not `1` |
 | S3 error names (`AccessDenied`, `NoSuchKey`, …) | 403/404/502 | from AWS |
 | `PLATFORM`, `NO_CREDENTIALS`, `WORKER` | ≥500 | failed execution (e.g. the link's secret came back masked) |
 
@@ -262,6 +263,7 @@ id, and the result is the same JSON.
 | `S3_BROWSER_LINK_SPECIFICATION` | catalog specification slug that selects link mode, default `s3_browser` |
 | `S3_BROWSER_LINK_SECRETS_QUERY` | query string for `GET /link/{id}` that includes secret attributes, default `include_secret_attributes=true` |
 | `S3_BROWSER_UNVERIFIED_ENTITY_BINDING` | `1` = demo-only fallback when the execution record has no `entity_nrn`; never in a customer organization |
+| `S3_BROWSER_LEGACY_MODES` | `1` turns on the modes that open S3 with the worker's own AWS identity (direct command, service action, `aws-s3-bucket` catalog entity); off by default, so only link mode runs |
 
 ## Develop
 

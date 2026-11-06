@@ -70,7 +70,8 @@ Worker codes in link mode (CODE → status):
 ## Worker behaviour in link mode (security-relevant, all mandatory)
 
 1. Link mode = catalog envelope whose `notification.specification.slug` equals `S3_BROWSER_LINK_SPECIFICATION`
-   (env, default `s3_browser`). The existing bucket-entity catalog mode (`aws-s3-bucket`) and service/legacy shapes keep working.
+   (env, default `s3_browser`). The bucket-entity catalog mode (`aws-s3-bucket`) and the service/legacy shapes run only with
+   `S3_BROWSER_LEGACY_MODES=1`; without it they are refused with `LINK_MODE_ONLY` before any lookup.
 1b. **The envelope is not trusted.** Anyone with `agent:run_command` can send a catalog-shaped envelope through
    `POST /controlplane/agent_command`. Link mode takes only `notification.id` and `notification.slug` from it. Before anything
    else (after the `WRITES_DISABLED` gate) the worker reads, with the agent's key and no caching,
@@ -142,7 +143,8 @@ the sync answer is recorded.
   with `agent:run_command`.
 - **Other modes of the same binary.** The legacy direct command (`{action, service_id}` through `agent_command`) and the
   `aws-s3-bucket` catalog mode open S3 with the worker's own identity and do no catalog check; anyone with
-  `agent:run_command` can use them on any bucket that identity reaches. Candidates to disable or gate in the security review.
+  `agent:run_command` can use them on any bucket that identity reaches. Off by default since `S3_BROWSER_LEGACY_MODES`;
+  turning them on brings this risk back.
 - **`S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1`** (step 1c) unbinds the entity from the execution while it is on.
 - **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design); the secret never leaves the worker.
 

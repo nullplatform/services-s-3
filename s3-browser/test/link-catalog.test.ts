@@ -7,6 +7,16 @@ import type { Platform } from "../src/platform";
 import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, parseLinkOperation } from "../src/protocol";
 import type { ObjectStore } from "../src/s3";
 
+// The catalog's action routes run @nullplatform/server's request transform: snake_case keys arrive
+// camelCased BEFORE the input schema is validated (catalog-entities-api src/routes/action.ts), so the
+// spec declares inputs in camelCase while the plugin and the worker keep speaking snake_case. Outputs
+// come back from the executor untransformed and stay snake_case.
+const camel = (key: string) => key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+const catalogSees = (input: unknown): unknown =>
+  input && typeof input === "object" && !Array.isArray(input)
+    ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, value]) => [camel(key), value]))
+    : input;
+
 // The s3_browser catalog documents against the worker that answers them (link mode): the
 // inputs the schemas accept are the ones the worker accepts, and its real outputs validate.
 
@@ -115,13 +125,13 @@ describe("s3_browser catalog specification", () => {
     }
   });
 
-  test("every input requires link_id, admits nothing extra, and names the fields the worker accepts", () => {
+  test("every input requires linkId (link_id on the wire), admits nothing extra, and names the fields the worker accepts", () => {
     for (const [slug, action] of Object.entries(actions)) {
       const input = action.input as { required: string[]; additionalProperties: boolean; properties: Record<string, { pattern?: string }> };
-      expect(input.required).toContain("link_id");
+      expect(input.required).toContain("linkId");
       expect(input.additionalProperties).toBe(false);
-      expect(input.properties.link_id.pattern).toBe("^[A-Za-z0-9-]{1,64}$");
-      expect(Object.keys(input.properties).sort()).toEqual([...LINK_INPUT_FIELDS[slug]].sort());
+      expect(input.properties.linkId.pattern).toBe("^[A-Za-z0-9-]{1,64}$");
+      expect(Object.keys(input.properties).sort()).toEqual([...LINK_INPUT_FIELDS[slug]].map(camel).sort());
     }
   });
 
@@ -130,7 +140,7 @@ describe("s3_browser catalog specification", () => {
       const validateInput = ajv.compile(actions[slug].input);
       const validateOutput = ajv.compile(actions[slug].output);
       for (const input of [inputs[slug], minimal[slug]]) {
-        expect(validateInput(input)).toBe(true);
+        expect(validateInput(catalogSees(input))).toBe(true);
         const result = await runCommand(envelope(slug, input), handler);
         expect(result.success).toBe(true);
         const output = JSON.parse(result.data.stdout);
@@ -153,7 +163,7 @@ describe("s3_browser catalog specification", () => {
       if (slug === "read-object") refused.push({ link_id: "lnk-1", key: "a", max_bytes: 0 }, { link_id: "lnk-1", key: "a", max_bytes: 262145 });
       for (const input of refused) {
         const clean = JSON.parse(JSON.stringify(input));
-        expect([slug, clean, validate(clean)]).toEqual([slug, clean, false]);
+        expect([slug, clean, validate(catalogSees(clean))]).toEqual([slug, clean, false]);
         expect([slug, clean, workerAccepts(slug, clean)]).toEqual([slug, clean, false]);
       }
     });
