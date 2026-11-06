@@ -136,7 +136,19 @@ export TOFU_MODULE_DIR="$SERVICE_PATH/deployment"
 
 export TOFU_INIT_VARIABLES="-backend-config=bucket=${TFSTATE_BUCKET} -backend-config=key=terraform.tfstate -backend-config=region=${REGION} -backend-config=use_lockfile=true"
 
-export TOFU_VARIABLES="-var=service_id=${SERVICE_ID} -var=region=${REGION} -var=bucket_name=${BUCKET_NAME} -var=versioning=${VERSIONING} -var=encryption=${ENCRYPTION} -var=public_access_block=${PUBLIC_ACCESS_BLOCK} -var=force_destroy=${FORCE_DESTROY}"
+# The variables go to tofu as a JSON file, never as words on its command line: several come
+# from the service's attributes. tofu converts "true"/"false" to the module's bool variables.
+export TOFU_VAR_FILE="$OUTPUT_DIR/np.tfvars.json"
+jq -n \
+  --arg service_id          "$SERVICE_ID" \
+  --arg region              "$REGION" \
+  --arg bucket_name         "$BUCKET_NAME" \
+  --arg versioning          "$VERSIONING" \
+  --arg encryption          "$ENCRYPTION" \
+  --arg public_access_block "$PUBLIC_ACCESS_BLOCK" \
+  --arg force_destroy       "$FORCE_DESTROY" \
+  '{service_id: $service_id, region: $region, bucket_name: $bucket_name, versioning: $versioning,
+    encryption: $encryption, public_access_block: $public_access_block, force_destroy: $force_destroy}' > "$TOFU_VAR_FILE"
 
 # --- Extract link context (link workflows only) -----------------------------
 # These are consumed by build_permissions_context in the next workflow step.

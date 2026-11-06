@@ -13,24 +13,32 @@ resource "aws_iam_user" "link" {
 }
 
 # ---------------------------------------------------------------------------
-# Access key
-# The keepers block ensures the key is only recreated if link_id changes.
+# Access key: not managed here. scripts/aws/link_access_key creates it with
+# the AWS CLI and writes its secret only to the link, so the tfstate never
+# holds it. Links created before this change keep their key: the block below
+# forgets it from the state without deleting it in AWS.
 # ---------------------------------------------------------------------------
 
-resource "aws_iam_access_key" "link" {
-  user = aws_iam_user.link.name
+removed {
+  from = aws_iam_access_key.link
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 # ---------------------------------------------------------------------------
 # Inline policy scoped to the bucket (and optionally a path prefix)
 # ---------------------------------------------------------------------------
 
+data "aws_partition" "current" {}
+
 data "aws_iam_policy_document" "link" {
   statement {
     sid       = "BucketLevel"
     effect    = "Allow"
     actions   = local.bucket_actions
-    resources = [var.bucket_arn]
+    resources = [local.bucket_arn]
 
     dynamic "condition" {
       for_each = var.path_prefix == "" ? [] : [1]

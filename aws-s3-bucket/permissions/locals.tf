@@ -1,4 +1,7 @@
 locals {
+  # Built from the validated bucket name, never taken from the service's attributes.
+  bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.bucket_name}"
+
   # Bucket-level actions (required so the app can list/head the bucket)
   bucket_actions_by_level = {
     "read"       = ["s3:ListBucket", "s3:GetBucketLocation"]
@@ -17,7 +20,7 @@ locals {
   object_actions = local.object_actions_by_level[var.access_level]
 
   # If path_prefix is set, scope object-level permissions to that prefix.
-  object_resource_arn = var.path_prefix == "" ? "${var.bucket_arn}/*" : "${var.bucket_arn}/${var.path_prefix}*"
+  object_resource_arn = var.path_prefix == "" ? "${local.bucket_arn}/*" : "${local.bucket_arn}/${var.path_prefix}*"
 
   # When a prefix is set, restrict s3:ListBucket to that prefix via condition.
   list_bucket_condition = var.path_prefix == "" ? {} : {

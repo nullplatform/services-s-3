@@ -29,7 +29,9 @@
           "type": "string",
           "title": "Path Prefix",
           "default": "",
-          "description": "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access.",
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9!_.'()/-]*$",
+          "description": "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access. Letters, digits, / and ! _ . ' ( ) - only.",
           "editableOn": ["create", "update"],
           "order": 2
         },
