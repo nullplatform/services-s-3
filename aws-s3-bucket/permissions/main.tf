@@ -13,12 +13,18 @@ resource "aws_iam_user" "link" {
 }
 
 # ---------------------------------------------------------------------------
-# Access key
-# The keepers block ensures the key is only recreated if link_id changes.
+# Access key: not managed here. scripts/aws/link_access_key creates it with
+# the AWS CLI and writes its secret only to the link, so the tfstate never
+# holds it. Links created before this change keep their key: the block below
+# forgets it from the state without deleting it in AWS.
 # ---------------------------------------------------------------------------
 
-resource "aws_iam_access_key" "link" {
-  user = aws_iam_user.link.name
+removed {
+  from = aws_iam_access_key.link
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 # ---------------------------------------------------------------------------

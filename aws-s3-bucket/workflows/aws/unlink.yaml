@@ -36,6 +36,8 @@ steps:
     type: script
     file: $SERVICE_PATH/scripts/aws/build_permissions_context
     output:
+      - name: IAM_USER_NAME
+        type: environment
       - name: OUTPUT_DIR
         type: environment
       - name: TOFU_MODULE_DIR
@@ -44,6 +46,12 @@ steps:
         type: environment
       - name: TOFU_VAR_FILE
         type: environment
+
+  - name: delete link access keys
+    type: script
+    file: $SERVICE_PATH/scripts/aws/link_access_key
+    configuration:
+      LINK_KEY_ACTION: delete-all
 
   - name: tofu
     type: script

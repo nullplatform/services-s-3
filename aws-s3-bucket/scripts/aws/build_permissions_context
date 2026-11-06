@@ -61,6 +61,7 @@ fi
 # Format: np-s3-<first 16 hex chars of link ID>  (~22 chars, safe for IAM)
 
 IAM_USER_NAME="np-s3-$(echo "${LINK_ID}" | tr -d '-' | cut -c1-16 | tr '[:upper:]' '[:lower:]')"
+export IAM_USER_NAME
 
 # --- Prepare link-specific working directory --------------------------------
 # Override OUTPUT_DIR so each link has its own isolated workspace and tfstate.

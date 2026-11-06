@@ -36,6 +36,8 @@ steps:
     type: script
     file: $SERVICE_PATH/scripts/aws/build_permissions_context
     output:
+      - name: IAM_USER_NAME
+        type: environment
       - name: OUTPUT_DIR
         type: environment
       - name: TOFU_MODULE_DIR
@@ -51,6 +53,8 @@ steps:
     configuration:
       TOFU_ACTION: apply
 
-  - name: write link outputs
+  - name: link access key
     type: script
-    file: $SERVICE_PATH/scripts/aws/write_link_outputs
+    file: $SERVICE_PATH/scripts/aws/link_access_key
+    configuration:
+      LINK_KEY_ACTION: ensure
