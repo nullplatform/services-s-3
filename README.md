@@ -105,6 +105,8 @@ The agent executing this service assumes the IAM role defined in [`aws-s3-bucket
 
 The service is published once as the package `np-aws-s3-bucket` (specification "AWS S3 Bucket"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
 
+If you need to change the specification, the links, the actions or the workflows themselves, see [the global package, or your own fork](#two-ways-to-run-this-service-the-global-package-or-your-own-fork) below before installing anything.
+
 Installing it touches the same three layers as registering a service yourself, and only the nullplatform layer changes:
 
 | Layer | What | Module |
@@ -165,16 +167,36 @@ Organizations that registered this service with `service_definition` have their 
 - Keep your IAM role: both specifications assume the role under selector `s3`, with the same permissions. The infrastructure layer does not change.
 - Existing services stay on your copy (a service cannot move to another specification). Create new services from "AWS S3 Bucket", and remove your `service_definition` and its channel once no service uses them.
 
-### Global package or fork?
+### Two ways to run this service: the global package, or your own fork
 
-**Use the global package.** It is the default, and the only way to keep receiving updates: every fix, new feature and security patch arrives as a new release, and you take it by moving `ref`. The specs, the code and how the service is installed stay maintained here. If something is missing or wrong, open an issue or a pull request in this repository, so every organization gets it.
+| | **Global package** (default) | **Your own fork** |
+|---|---|---|
+| Specs and code | Maintained by nullplatform in this repository | Maintained by you, in your fork |
+| What you install | The package `np-aws-s3-bucket`, read-only | A package you publish in your organization, or a registered copy |
+| Updates | A new release: move the version | Only when you merge upstream into your fork |
+| When | Always, unless you need changes to the specification, the links, the actions or the workflows | Substantial changes: new actions or links, another specification (attributes, validations), workflows that behave differently |
 
-**Fork only when you need to extend the service substantially**: new actions or links, a different specification (attributes, validations), or workflows that behave differently. A fork has real costs:
+**Use the global package.** It is the only way to keep receiving fixes, features and security patches: each one arrives as a release of this repository and you take it by moving the installed version. The section above is that path; its two forms are equivalent:
 
-- **You become the publisher.** You build and register your own image, publish your own package in your organization, and maintain its specs, code and installation.
+- From a catalog of `service_definition` entries (tofu-modules): the same entry with an `install_package = { slug = "np-aws-s3-bucket", version = "X.Y.Z" }` block becomes a `service_package_installation`. For a service the installation is the whole nullplatform side; the channel stays in your bindings layer.
+- From this repository directly: [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) at a release tag, which wraps that module with the slug and version of the tag.
+
+If something is missing or wrong, open an issue or a pull request here, so every organization gets it.
+
+**Fork only to change what the service is.** A fork means you become the publisher of a different service: you build its worker image, publish its package in your organization and maintain its specs, code and installation. Step by step:
+
+1. **Fork the repository and give the service its own names.** In [`aws-s3-bucket/publish/main.tf`](./aws-s3-bucket/publish/main.tf): `package_slug` (for example `acme-aws-s3-bucket`), `service_name` ("Acme S3 Bucket") and `service_slug` (`acme-aws-s3-bucket`). The slug must differ from `np-aws-s3-bucket`, and from `aws-s3-bucket` if you also run a copy: agent channels route by the specification slug, so two services with one slug share a worker. Link specifications keep their own slugs; give them yours with `link_slugs` only if they collide inside your organization.
+2. **Publish into your organization, not every organization.** In the same file, `visible_to` goes from `["organization=*"]` to `[var.publisher_nrn]`: only the platform organization may publish globally, and your package is yours. Point `image_registry` / `image_repository` ([`aws-s3-bucket/publish/variables.tf`](./aws-s3-bucket/publish/variables.tf)) at your registry.
+3. **Set the release workflow's secrets and variables in your fork**: `ARTIFACT_NP_API_KEY` (a key of your organization, allowed to write artifacts, specifications and packages), `AWS_ROLE_ARN_ECR_PUSH`, `AWS_ROLE_ARN_PACKAGE_STATE` and `PACKAGE_TFSTATE_BUCKET`. From then on, each release of your fork builds the image, registers it and publishes a revision of your package ([`release.yml`](./.github/workflows/release.yml)); `version.txt` is the version it publishes.
+4. **Install your package the same way as the global one**, with your slug in `install_package` and your own agent channel. The IAM role and its selector can stay `s3` as long as the permissions in [`aws-s3-bucket/specs/requirements/aws`](./aws-s3-bucket/specs/requirements/aws) still fit what your fork does; if they do not, give your fork its own role and selector too.
+
+Without packages, the classic way still works: register your fork as a copy with `service_definition` pointing at your fork's repository and tag.
+
+What a fork costs, before you take it:
+
 - **Updates stop arriving.** Upstream fixes reach you only when you merge them into your fork yourself.
-- **There is no way back for existing services.** Services created from your fork's specification cannot be moved to the global one.
-- **Names must not collide.** Give your fork its own `package_slug` and service specification name (the channel routes by the specification's slug, which comes from its name), and its own IAM role and selector, or your fork and the global package share one worker and one role.
+- **There is no way back for existing services.** A service cannot move to another specification: services created from your fork's specification stay on it.
+- **You own the operations.** Images, releases, state of the publisher stack and the compatibility of your specs with the agent are yours to keep.
 
 ## How the package is published
 
