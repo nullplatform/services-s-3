@@ -20,12 +20,12 @@
 ################################################################################
 
 locals {
-  package_slug = "nullplatform-aws-s3-bucket"
+  package_slug = "np-aws-s3-bucket"
   version      = trimspace(file("${path.module}/../../version.txt"))
 }
 
 module "package" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/package_installation?ref=v9.9.0"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/package_installation?ref=v9.12.0"
 
   nrn             = var.nrn
   package_slug    = local.package_slug

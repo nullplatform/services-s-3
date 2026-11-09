@@ -103,7 +103,7 @@ The agent executing this service assumes the IAM role defined in [`aws-s3-bucket
 
 ## Install in your organization
 
-The service is published once as the package `nullplatform-aws-s3-bucket` (specification "nullplatform AWS S3 Bucket"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
+The service is published once as the package `np-aws-s3-bucket` (specification "AWS S3 Bucket"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
 
 Installing it touches the same three layers as registering a service yourself, and only the nullplatform layer changes:
 
@@ -158,12 +158,12 @@ Prerequisites: an agent whose `TAGS` match the channel's `tags_selectors` and wi
 
 ### Already registered with `service_definition`?
 
-Organizations that registered this service with `service_definition` have their own copy: specification "AWS S3 Bucket" (slug `aws-s3-bucket`) and a channel filtered to that slug. The global package uses other names (`nullplatform-aws-s3-bucket`), so both live side by side in one organization:
+Organizations that registered this service with `service_definition` have their own copy: specification "AWS S3 Bucket" (slug `aws-s3-bucket`) and a channel filtered to that slug. The global package uses other names (`np-aws-s3-bucket`), so both live side by side in one organization:
 
 - In the nullplatform layer, add the installation module next to your `service_definition`. Its outputs have the same names, so the map your bindings layer reads keeps its shape.
 - In the bindings layer, add a channel for the global slug. Your existing channel keeps serving your copy.
 - Keep your IAM role: both specifications assume the role under selector `s3`, with the same permissions. The infrastructure layer does not change.
-- Existing services stay on your copy (a service cannot move to another specification). Create new services from "nullplatform AWS S3 Bucket", and remove your `service_definition` and its channel once no service uses them.
+- Existing services stay on your copy (a service cannot move to another specification). Create new services from "AWS S3 Bucket", and remove your `service_definition` and its channel once no service uses them.
 
 ### Global package or fork?
 

@@ -8,11 +8,6 @@ output "installed_version" {
   value       = module.package.installed_version
 }
 
-output "missing_optional_requirements" {
-  description = "Optional providers the package can use that are not configured at nrn or above it."
-  value       = module.package.missing_optional_requirements
-}
-
 output "package_slug" {
   description = "Slug of the package: the package_slug of the agent channel."
   value       = local.package_slug

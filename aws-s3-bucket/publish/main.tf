@@ -15,12 +15,13 @@
 ################################################################################
 
 locals {
-  # The nullplatform- prefix keeps the global package and its specification
-  # apart from the copies organizations registered from this repository with
+  # The np- prefix keeps the global package and its specification apart from
+  # the copies organizations registered from this repository with
   # service_definition (specification "AWS S3 Bucket", slug aws-s3-bucket):
   # agent channels route by specification slug, so the two must differ for
-  # both to live in one organization.
-  package_slug = "nullplatform-aws-s3-bucket"
+  # both to live in one organization. The prefix lives in the slug only: the
+  # specification keeps the plain name people read.
+  package_slug = "np-aws-s3-bucket"
   service_path = "aws-s3-bucket"
   version      = trimspace(file("${path.module}/../../version.txt"))
 }
@@ -41,7 +42,7 @@ resource "terraform_data" "release_guard" {
 }
 
 module "service_definition" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v9.7.0"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v9.12.0"
 
   nrn = var.publisher_nrn
 
@@ -53,9 +54,11 @@ module "service_definition" {
   # the release tag so the stack says which specs it published.
   repository_branch = "v${local.version}"
   service_path      = local.service_path
-  # Slugifies to the package slug, so the installation's channel filter
-  # (specification slug = package slug) matches it.
-  service_name = "nullplatform AWS S3 Bucket"
+  # The name is what people read; the slug carries the namespace and is what
+  # the installation's channel filter matches. The package the module
+  # publishes takes the specification's slug.
+  service_name = "AWS S3 Bucket"
+  service_slug = local.package_slug
 
   package = var.publish_package ? {
     slug       = local.package_slug

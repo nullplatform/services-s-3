@@ -1,6 +1,6 @@
 # aws-s3-bucket installation
 
-OpenTofu module that installs the `nullplatform-aws-s3-bucket` package (specification "nullplatform AWS S3 Bucket") in your organization, at the version of the tag you reference. The package is published once for every organization; this module does not copy it.
+OpenTofu module that installs the `np-aws-s3-bucket` package (specification "AWS S3 Bucket") in your organization, at the version of the tag you reference. The package is published once for every organization; this module does not copy it.
 
 It is only the nullplatform side of the installation, so it goes in the layer of your stack that registers specifications. The IAM role the service assumes and the agent channel stay in the layers that already hold them. See [Install in your organization](../../README.md#install-in-your-organization) for the three layers together.
 
@@ -42,4 +42,3 @@ Use this module to keep receiving updates. Fork the repository only when you nee
 | `package_id` | Id of the installed package |
 | `installed_version` | Version new services are born with (also `package_default_version`) |
 | `installation_id` | Id of the package installation |
-| `missing_optional_requirements` | Optional providers the package can use that you have not configured |
