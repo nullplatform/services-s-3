@@ -24,6 +24,12 @@ locals {
   package_slug = "np-aws-s3-bucket"
   service_path = "aws-s3-bucket"
   version      = trimspace(file("${path.module}/../../version.txt"))
+
+  # Whether this revision becomes the package default — what an organization
+  # that installs without pinning a version is born with. A stable release
+  # promotes; a prerelease (any semver with a `-`, such as 0.6.0-rc.1) is
+  # published without moving the default. promote_default forces either.
+  promote_default = var.promote_default != null ? var.promote_default : length(regexall("-", local.version)) == 0
 }
 
 # A revision without a digest would float to whatever image is newest, and one
@@ -63,11 +69,8 @@ module "service_definition" {
   package = var.publish_package ? {
     slug       = local.package_slug
     version    = local.version
+    default    = local.promote_default
     visible_to = ["organization=*"]
-    # No requires_providers: the API does not accept the declaration yet, and
-    # organizations that create their providers in a layer applied after the
-    # install could never satisfy a required one. The worker reads the cloud
-    # provider at runtime, as it always did.
     artifacts = [{
       name   = "worker-image"
       type   = "oci_image"

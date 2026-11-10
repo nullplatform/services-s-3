@@ -10,6 +10,10 @@ Each apply publishes one immutable revision that pins:
 
 The revision's version is `version.txt`. The apply refuses to publish when it does not match the release tag (`release_tag`, set by the workflow). Re-applying the same version is a no-op.
 
+## Which revision becomes the default
+
+Not every publish moves the package default, the revision an organization that installs without pinning a version is born with. A stable release promotes itself; a prerelease (any version with a `-`, such as `0.6.0-rc.1`) is published without moving the default, so it can be installed by version to try it. `promote_default` (`-var promote_default=false`, or `true`) forces either way.
+
 ## Repository configuration
 
 | Kind | Name | Purpose |

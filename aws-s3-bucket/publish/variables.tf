@@ -42,3 +42,9 @@ variable "image_repository" {
   type        = string
   default     = "nullplatform/services/s3"
 }
+
+variable "promote_default" {
+  description = "Whether the published revision becomes the package default. Null (the default) promotes a stable release and leaves a prerelease (a version with a `-`) where it is; true or false forces it."
+  type        = bool
+  default     = null
+}
