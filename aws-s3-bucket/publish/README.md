@@ -1,6 +1,6 @@
 # aws-s3-bucket publish
 
-OpenTofu stack that publishes this service as the package `np-aws-s3-bucket` (specification "AWS S3 Bucket"), visible to every organization. Only the release workflow runs it, through the shared [`publish-package`](https://github.com/nullplatform/actions-nullplatform#publish-package) workflow that [`release.yml`](../../.github/workflows/release.yml) enables with `package_stack_dir`; organizations install the package with [`../installation`](../installation).
+OpenTofu stack that publishes this service as the package `np-aws-s3-bucket` (specification "AWS S3 Bucket"), visible to every organization. Only the release workflow runs it, through the shared [`publish-package`](https://github.com/nullplatform/actions-nullplatform#publish-package) workflow that [`release.yml`](../../.github/workflows/release.yml) enables with `package_stack_dir`; organizations install the package with tofu-modules' `service_package_installation` (see the repository README).
 
 Each apply publishes one immutable revision that pins:
 

@@ -7,8 +7,8 @@
 # Each release publishes a new immutable revision (version.txt, bumped by
 # release-please); re-applying the same version is a no-op.
 #
-# Organizations do not get a copy: they install this package with
-# ../installation, which consumes it read-only.
+# Organizations do not get a copy: they install this package with tofu-modules'
+# service_package_installation, which consumes it read-only.
 #
 # Run only by the release workflow, through actions-nullplatform's
 # publish-package (see release.yml).

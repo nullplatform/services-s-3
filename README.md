@@ -112,8 +112,8 @@ Installing it touches the same three layers as registering a service yourself, a
 | Layer | What | Module |
 |---|---|---|
 | infrastructure (AWS credentials) | The IAM role the service assumes | [`aws-s3-bucket/specs/requirements/aws`](./aws-s3-bucket/specs/requirements/aws) |
-| nullplatform (nullplatform API key) | The installation of the package, at the version of the tag | [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) |
-| bindings | The agent channel, and the role under selector `s3` in your IAM provider | tofu-modules' `service_definition_agent_association`, your `aws-iam-configuration` provider |
+| nullplatform (nullplatform API key) | The installation of the package and the agent channel | tofu-modules' `service_package_installation` |
+| bindings | The role under selector `s3` in your IAM provider | your `aws-iam-configuration` provider |
 
 Reference both modules of this repository at the same release tag:
 
@@ -131,30 +131,27 @@ module "s3_requirements" {
 #   assume_role_arns = [..., module.s3_requirements.permissions_role_arn]
 
 # ── nullplatform layer ───────────────────────────────────────────────
+# The same module a catalog entry with `install_package` becomes. For a
+# service the installation is the whole nullplatform side, channel included.
 module "s3" {
-  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/installation?ref=v0.5.6"
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.12.0"
 
-  nrn = var.nrn
+  nrn                  = var.nrn
+  package_slug         = "np-aws-s3-bucket"
+  package_version      = "0.5.6"                  # the release you install; upgrading = moving it
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
 }
+# Keeping channels in a separate bindings layer instead? Use
+# nullplatform/package_installation here and service_definition_agent_association
+# there, with package_slug = "np-aws-s3-bucket".
 
 # ── bindings layer ───────────────────────────────────────────────────
-# s3_requirements and s3 come from the other layers (remote state).
-module "s3_channel" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=vX.Y.Z"
-
-  nrn                        = var.nrn
-  tags_selectors             = { cluster = "runtime" } # must match the agent's TAGS
-  service_specification_slug = local.s3.service_specification_slug
-  worker_orchestrator        = true
-  package_slug               = local.s3.package_slug
-}
-
 # One aws-iam-configuration per NRN and dimensions: add the entry to the list
 # your IAM provider already has.
 #   { selector = "s3", arn = local.s3_requirements.permissions_role_arn }
 ```
 
-The service assumes the role it finds under selector `s3` in the IAM provider closest to its NRN. To upgrade, move `ref` to a newer tag in both layers. See [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) for its inputs and outputs.
+The service assumes the role it finds under selector `s3` in the IAM provider closest to its NRN. To upgrade, move the release in both layers: `ref` of the requirements module and `package_version` of the installation. See tofu-modules' [`service_package_installation`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_package_installation) for its inputs and outputs.
 
 Prerequisites: an agent whose `TAGS` match the channel's `tags_selectors` and with `public.ecr.aws/nullplatform/*` in `worker.allowedRegistries`, and an AWS cloud provider exposing `account.region` at the NRN or above it.
 
@@ -162,8 +159,7 @@ Prerequisites: an agent whose `TAGS` match the channel's `tags_selectors` and wi
 
 Organizations that registered this service with `service_definition` have their own copy: specification "AWS S3 Bucket" (slug `aws-s3-bucket`) and a channel filtered to that slug. The global package uses other names (`np-aws-s3-bucket`), so both live side by side in one organization:
 
-- In the nullplatform layer, add the installation module next to your `service_definition`. Its outputs have the same names, so the map your bindings layer reads keeps its shape.
-- In the bindings layer, add a channel for the global slug. Your existing channel keeps serving your copy.
+- In the nullplatform layer, add the installation (the module above, or a catalog entry with `install_package`) next to your `service_definition`. Its outputs have the same names, so the map your bindings layer reads keeps its shape, and its channel routes only the global slug: your existing channel keeps serving your copy.
 - Keep your IAM role: both specifications assume the role under selector `s3`, with the same permissions. The infrastructure layer does not change.
 - Existing services stay on your copy (a service cannot move to another specification). Create new services from "AWS S3 Bucket", and remove your `service_definition` and its channel once no service uses them.
 
@@ -176,10 +172,10 @@ Organizations that registered this service with `service_definition` have their 
 | Updates | A new release: move the version | Only when you merge upstream into your fork |
 | When | Always, unless you need changes to the specification, the links, the actions or the workflows | Substantial changes: new actions or links, another specification (attributes, validations), workflows that behave differently |
 
-**Use the global package.** It is the only way to keep receiving fixes, features and security patches: each one arrives as a release of this repository and you take it by moving the installed version. The section above is that path; its two forms are equivalent:
+**Use the global package.** It is the only way to keep receiving fixes, features and security patches: each one arrives as a release of this repository and you take it by moving the installed version. The section above is that path; its two forms are the same module:
 
-- From a catalog of `service_definition` entries (tofu-modules): the same entry with an `install_package = { slug = "np-aws-s3-bucket", version = "X.Y.Z" }` block becomes a `service_package_installation`. For a service the installation is the whole nullplatform side; the channel stays in your bindings layer.
-- From this repository directly: [`aws-s3-bucket/installation`](./aws-s3-bucket/installation) at a release tag, which wraps that module with the slug and version of the tag.
+- From a catalog of `service_definition` entries (tofu-modules): the same entry with an `install_package = { slug = "np-aws-s3-bucket", version = "X.Y.Z" }` block becomes a `service_package_installation`. For a service the installation is the whole nullplatform side, the agent channel included.
+- From a root of your own: the module call in the section above, with the same inputs.
 
 If something is missing or wrong, open an issue or a pull request here, so every organization gets it.
 
