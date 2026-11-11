@@ -8,7 +8,7 @@ Each apply publishes one immutable revision that pins:
 - every action specification, including the ones the platform creates by default;
 - the worker image the same release pushed, by digest.
 
-The revision's version is `version.txt`. The apply refuses to publish when it does not match the release tag (`release_tag`, set by the workflow). Re-applying the same version is a no-op.
+The revision's version is the release tag (`release_tag`, set by the workflow), without the `v`: the same version the worker image is registered with. The apply refuses to publish without it. Re-applying the same version is a no-op.
 
 ## Which revision becomes the default
 

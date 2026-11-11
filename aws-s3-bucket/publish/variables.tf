@@ -4,9 +4,14 @@ variable "publisher_nrn" {
 }
 
 variable "release_tag" {
-  description = "Release tag being published (vX.Y.Z), set by the release workflow. The apply refuses to publish when version.txt does not match it."
+  description = "Release tag being published (vX.Y.Z, or vX.Y.Z-<pre> for a prerelease), set by the release workflow. It is the revision's version, without the v."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.release_tag == null || can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$", var.release_tag))
+    error_message = "release_tag must look like vX.Y.Z or vX.Y.Z-<prerelease>."
+  }
 }
 
 variable "image_digest" {

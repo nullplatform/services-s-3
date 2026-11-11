@@ -4,8 +4,9 @@
 # Publishes the service as ONE package visible to every organization
 # (organization=*): the service spec, its action specs and link specs from this
 # checkout, plus the worker image the same release pushed, pinned by digest.
-# Each release publishes a new immutable revision (version.txt, bumped by
-# release-please); re-applying the same version is a no-op.
+# Each release publishes a new immutable revision, versioned by its release
+# tag (the same version the worker image is registered with); re-applying the
+# same version is a no-op.
 #
 # Organizations do not get a copy: they install this package with tofu-modules'
 # service_package_installation, which consumes it read-only.
@@ -23,17 +24,24 @@ locals {
   # specification keeps the plain name people read.
   package_slug = "np-aws-s3-bucket"
   service_path = "aws-s3-bucket"
-  version      = trimspace(file("${path.module}/../../version.txt"))
+  # The release tag the workflow passes, as the artifact registration takes it.
+  # Null only on the bootstrap apply, which publishes no revision.
+  version = var.release_tag == null ? null : trimprefix(var.release_tag, "v")
 
   # Whether this revision becomes the package default — what an organization
   # that installs without pinning a version is born with. A stable release
   # promotes; a prerelease (any semver with a `-`, such as 0.6.0-rc.1) is
   # published without moving the default. promote_default forces either.
-  promote_default = var.promote_default != null ? var.promote_default : length(regexall("-", local.version)) == 0
+  # Without a version (the bootstrap) nothing is published, so the value is moot.
+  promote_default = (
+    var.promote_default != null ? var.promote_default :
+    local.version == null ? false :
+    length(regexall("-", local.version)) == 0
+  )
 }
 
 # A revision without a digest would float to whatever image is newest, and one
-# whose version is not the tag's would publish other specs under it: refuse both.
+# without a tag would have no version: refuse both.
 resource "terraform_data" "release_guard" {
   lifecycle {
     precondition {
@@ -41,8 +49,8 @@ resource "terraform_data" "release_guard" {
       error_message = "image_digest is required to publish a package revision (only the bootstrap apply with publish_package = false may omit it)."
     }
     precondition {
-      condition     = var.release_tag == null || var.release_tag == "v${local.version}"
-      error_message = "version.txt is ${local.version} but the release tag is ${coalesce(var.release_tag, "unset")}."
+      condition     = !var.publish_package || var.release_tag != null
+      error_message = "release_tag is required to publish a package revision: it is the revision's version (only the bootstrap apply with publish_package = false may omit it)."
     }
   }
 }
@@ -58,7 +66,7 @@ module "service_definition" {
   local_specs_path = abspath("${path.module}/..")
   # Required by the module but not read with git_provider = "local"; set to
   # the release tag so the stack says which specs it published.
-  repository_branch = "v${local.version}"
+  repository_branch = coalesce(var.release_tag, "unreleased")
   service_path      = local.service_path
   # The name is what people read; the slug carries the namespace and is what
   # the installation's channel filter matches. The package the module
