@@ -19,7 +19,8 @@ Not every publish moves the package default, the revision an organization that i
 | Kind | Name | Purpose |
 |---|---|---|
 | secret | `ARTIFACT_NP_API_KEY` | API key of the publisher organization, already used to register the image. Passed as `package_np_api_key`, so it must also be allowed to write specs and packages |
-| secret | `AWS_ROLE_ARN_PACKAGE_STATE` | OIDC role with access to the state bucket |
+| secret | `PACKAGE_STATE_AWS_ACCOUNT_ID` | AWS account of the state role. The role is `github-actions-<repository>-package-state`, by convention, and trusts only this repository's `main` branch and tags |
+| secret | `AWS_ROLE_ARN_PACKAGE_STATE` | Optional: a state role that does not follow the convention, such as in a fork. It wins over the account |
 | secret | `PACKAGE_TFSTATE_BUCKET` | S3 bucket for package stack states. Publishing is skipped while it is unset. A secret, not a variable: this repository is public and so are its run logs, and GitHub masks only secrets |
 | secret | `PACKAGE_TFSTATE_REGION` | Region of that bucket, a secret for the same reason |
 | variable | `NP_ARTIFACT_NRN` | Publisher organization NRN (already used to register the image) |

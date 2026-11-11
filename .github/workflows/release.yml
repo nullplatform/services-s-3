@@ -17,11 +17,14 @@ name: release
 # Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
 # NP_ARTIFACT_NRN. Package publishing reuses ARTIFACT_NP_API_KEY (the
 # publisher organization key, also allowed to write specs and packages) and
-# additionally needs the secrets AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the
-# tofu state bucket), PACKAGE_TFSTATE_BUCKET and PACKAGE_TFSTATE_REGION; the
-# shared workflow skips it until PACKAGE_TFSTATE_BUCKET is set.
-# Bucket and region are secrets, not variables: this repository is public and
-# so are its run logs, and GitHub masks only secrets.
+# additionally needs the secrets PACKAGE_STATE_AWS_ACCOUNT_ID,
+# PACKAGE_TFSTATE_BUCKET and PACKAGE_TFSTATE_REGION (organization secrets); the
+# shared workflow skips it until PACKAGE_TFSTATE_BUCKET is set. The state role
+# is github-actions-<repository>-package-state in that account, by convention;
+# AWS_ROLE_ARN_PACKAGE_STATE overrides it for a fork whose role is named
+# otherwise, and is not set here.
+# Account, bucket and region are secrets, not variables: this repository is
+# public and so are its run logs, and GitHub masks only secrets.
 on:
   push:
     branches:
@@ -52,6 +55,7 @@ jobs:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
       package_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
+      package_state_aws_account_id: ${{ secrets.PACKAGE_STATE_AWS_ACCOUNT_ID }}
       package_state_role_arn: ${{ secrets.AWS_ROLE_ARN_PACKAGE_STATE }}
       package_state_bucket: ${{ secrets.PACKAGE_TFSTATE_BUCKET }}
       package_state_region: ${{ secrets.PACKAGE_TFSTATE_REGION }}
