@@ -20,8 +20,8 @@ Not every publish moves the package default, the revision an organization that i
 |---|---|---|
 | secret | `ARTIFACT_NP_API_KEY` | API key of the publisher organization, already used to register the image. Passed as `package_np_api_key`, so it must also be allowed to write specs and packages |
 | secret | `AWS_ROLE_ARN_PACKAGE_STATE` | OIDC role with access to the state bucket |
-| variable | `PACKAGE_TFSTATE_BUCKET` | S3 bucket for package stack states (can be set once for the organization). Publishing is skipped while it is unset |
-| variable | `PACKAGE_TFSTATE_REGION` | Region of that bucket |
+| secret | `PACKAGE_TFSTATE_BUCKET` | S3 bucket for package stack states. Publishing is skipped while it is unset. A secret, not a variable: this repository is public and so are its run logs, and GitHub masks only secrets |
+| secret | `PACKAGE_TFSTATE_REGION` | Region of that bucket, a secret for the same reason |
 | variable | `NP_ARTIFACT_NRN` | Publisher organization NRN (already used to register the image) |
 
 ## First publish

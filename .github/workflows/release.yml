@@ -17,9 +17,11 @@ name: release
 # Configure: secrets AWS_ROLE_ARN_ECR_PUSH + ARTIFACT_NP_API_KEY, variable
 # NP_ARTIFACT_NRN. Package publishing reuses ARTIFACT_NP_API_KEY (the
 # publisher organization key, also allowed to write specs and packages) and
-# additionally needs secret AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the tofu
-# state bucket) and variables PACKAGE_TFSTATE_BUCKET + PACKAGE_TFSTATE_REGION;
-# it is skipped until PACKAGE_TFSTATE_BUCKET is set.
+# additionally needs the secrets AWS_ROLE_ARN_PACKAGE_STATE (OIDC role for the
+# tofu state bucket), PACKAGE_TFSTATE_BUCKET and PACKAGE_TFSTATE_REGION; the
+# shared workflow skips it until PACKAGE_TFSTATE_BUCKET is set.
+# Bucket and region are secrets, not variables: this repository is public and
+# so are its run logs, and GitHub masks only secrets.
 on:
   push:
     branches:
@@ -43,12 +45,13 @@ jobs:
       image_name: services/s3
       existing_tag: ${{ inputs.existing_tag || '' }}
       # Keeps the ?ref=vX.Y.Z install examples in the READMEs on the new tag.
-      # It rewrites EVERY ref=vX.Y.Z in every README.md, so READMEs must not
-      # pin other repositories (tofu-modules refs live in .tf files only).
+      # Only refs to this repository move; tofu-modules refs keep their own tag.
       update_readme_versions: true
-      package_stack_dir: ${{ vars.PACKAGE_TFSTATE_BUCKET != '' && 'aws-s3-bucket/publish' || '' }}
+      package_stack_dir: aws-s3-bucket/publish
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
       package_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
       package_state_role_arn: ${{ secrets.AWS_ROLE_ARN_PACKAGE_STATE }}
+      package_state_bucket: ${{ secrets.PACKAGE_TFSTATE_BUCKET }}
+      package_state_region: ${{ secrets.PACKAGE_TFSTATE_REGION }}
