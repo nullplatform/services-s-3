@@ -1,0 +1,4 @@
+# The worker's dependencies are installed inside the build; a local install must not reach the image.
+.git
+**/node_modules
+worker/dist

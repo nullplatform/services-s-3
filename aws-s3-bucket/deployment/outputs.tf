@@ -12,3 +12,8 @@ output "bucket_region" {
   value       = aws_s3_bucket.main.region
   description = "AWS region where the bucket is located"
 }
+
+output "access_logs_bucket" {
+  value       = var.access_logs ? aws_s3_bucket.access_logs[0].id : ""
+  description = "Bucket receiving the server access logs (empty when access_logs is off)"
+}

@@ -7,6 +7,7 @@ set -euo pipefail
 #
 # Fields with "export: true" in the service spec (bucket_name, bucket_arn,
 # bucket_region) become env vars in apps when a link is activated.
+# access_logs_bucket is not exported: apps have no access to it.
 # ---------------------------------------------------------------------------
 
 cd "$OUTPUT_DIR"
@@ -33,21 +34,30 @@ read_output() {
 BUCKET_NAME=$(read_output bucket_name) || exit 1
 BUCKET_ARN=$(read_output bucket_arn) || exit 1
 BUCKET_REGION=$(read_output bucket_region) || exit 1
+# Empty while access_logs is off, so it is read without read_output; writing the
+# empty value clears the attribute after access logs are turned off.
+if ! ACCESS_LOGS_BUCKET=$(tofu output -raw access_logs_bucket); then
+  echo "ERROR: could not read output access_logs_bucket for service $SERVICE_ID." >&2
+  exit 1
+fi
 
 ATTRS=$(jq -n \
   --arg bucket_name   "$BUCKET_NAME" \
   --arg bucket_arn    "$BUCKET_ARN" \
   --arg bucket_region "$BUCKET_REGION" \
+  --arg access_logs_bucket "$ACCESS_LOGS_BUCKET" \
   '{
-    bucket_name:   $bucket_name,
-    bucket_arn:    $bucket_arn,
-    bucket_region: $bucket_region
+    bucket_name:        $bucket_name,
+    bucket_arn:         $bucket_arn,
+    bucket_region:      $bucket_region,
+    access_logs_bucket: $access_logs_bucket
   }')
 
 echo "Updating service $SERVICE_ID attributes:"
 echo "  bucket_name:   $BUCKET_NAME"
 echo "  bucket_arn:    $BUCKET_ARN"
 echo "  bucket_region: $BUCKET_REGION"
+echo "  access_logs_bucket: ${ACCESS_LOGS_BUCKET:-(none)}"
 
 np service patch --id "$SERVICE_ID" --body "{\"attributes\": $ATTRS}"
 echo "Service attributes updated successfully."

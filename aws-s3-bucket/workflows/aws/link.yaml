@@ -31,18 +31,22 @@ steps:
         type: environment
       - name: LINK_PATH_PREFIX
         type: environment
+      - name: LINK_CREDENTIALS
+        type: environment
 
   - name: build permissions context
     type: script
     file: $SERVICE_PATH/scripts/aws/build_permissions_context
     output:
+      - name: IAM_USER_NAME
+        type: environment
       - name: OUTPUT_DIR
         type: environment
       - name: TOFU_MODULE_DIR
         type: environment
       - name: TOFU_INIT_VARIABLES
         type: environment
-      - name: TOFU_VARIABLES
+      - name: TOFU_VAR_FILE
         type: environment
 
   - name: tofu
@@ -51,6 +55,8 @@ steps:
     configuration:
       TOFU_ACTION: apply
 
-  - name: write link outputs
+  - name: link access key
     type: script
-    file: $SERVICE_PATH/scripts/aws/write_link_outputs
+    file: $SERVICE_PATH/scripts/aws/link_access_key
+    configuration:
+      LINK_KEY_ACTION: ensure

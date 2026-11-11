@@ -47,3 +47,20 @@ variable "force_destroy" {
   default     = false
   description = "Allow deleting the bucket even if it contains objects"
 }
+
+variable "access_logs" {
+  type        = bool
+  default     = false
+  description = "Record every request to the bucket (S3 server access logs) into a separate <bucket_name>-logs bucket"
+}
+
+variable "access_logs_retention_days" {
+  type        = number
+  default     = 90
+  description = "Days the access logs are kept before S3 expires them"
+
+  validation {
+    condition     = var.access_logs_retention_days >= 1 && floor(var.access_logs_retention_days) == var.access_logs_retention_days
+    error_message = "access_logs_retention_days must be a whole number of days, 1 or more."
+  }
+}

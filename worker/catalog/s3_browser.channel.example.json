@@ -1,0 +1,38 @@
+{
+  "description": "S3 browser link mode (s3_browser catalog actions) on the aws-s3-bucket worker",
+  "type": "agent",
+  "nrn": "organization=<org id>:account=<account id>",
+  "source": [
+    "catalog"
+  ],
+  "filters": {
+    "$and": [
+      {
+        "action": {
+          "$eq": "catalog:action:create"
+        }
+      },
+      {
+        "specification.slug": {
+          "$eq": "s3_browser"
+        }
+      }
+    ]
+  },
+  "configuration": {
+    "api_key": "<nullplatform api key>",
+    "selector": {
+      "<agent tag>": "<the tags_selectors of the aws-s3-bucket service's own channel>"
+    },
+    "command": {
+      "type": "package-exec",
+      "data": {
+        "package": "aws-s3-bucket",
+        "cmdline": "/app/packages/aws-s3-bucket/entrypoint",
+        "environment": {
+          "NP_ACTION_CONTEXT": "'${NOTIFICATION_CONTEXT}'"
+        }
+      }
+    }
+  }
+}
