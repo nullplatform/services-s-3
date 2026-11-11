@@ -120,7 +120,7 @@ Reference both modules of this repository at the same release tag:
 ```hcl
 # ── infrastructure layer ─────────────────────────────────────────────
 module "s3_requirements" {
-  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/specs/requirements/aws?ref=v0.5.6"
+  source = "git::https://github.com/nullplatform/services-s-3.git//aws-s3-bucket/specs/requirements/aws?ref=v0.5.8"
 
   cluster_name   = "my-cluster" # names the role nullplatform_my-cluster_s3_role
   agent_role_arn = module.agent_iam.nullplatform_agent_role_arn
