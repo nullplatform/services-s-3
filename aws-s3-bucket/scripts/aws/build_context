@@ -26,10 +26,14 @@ INSTANCE_NAME="np-$(echo "$SERVICE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs '
 SERVICE_ATTRS=$(echo "$CONTEXT" | jq -r '(.service.attributes // {}) * (.parameters // {})')
 
 BUCKET_NAME_SUFFIX=$(echo "$SERVICE_ATTRS"  | jq -r '.bucket_name_suffix // ""')
+# CRITICAL: jq's // also replaces false, so versioning and public_access_block are always on,
+# whatever the attribute says. Existing buckets were deployed that way; honoring a stored false
+# would suspend versioning and remove the public access block on their next update.
 VERSIONING=$(echo "$SERVICE_ATTRS"          | jq -r '.versioning          // true')
 ENCRYPTION=$(echo "$SERVICE_ATTRS"          | jq -r '.encryption          // "AES256"')
 PUBLIC_ACCESS_BLOCK=$(echo "$SERVICE_ATTRS" | jq -r '.public_access_block // true')
 FORCE_DESTROY=$(echo "$SERVICE_ATTRS"       | jq -r '.force_destroy       // false')
+ACCESS_LOGS=$(echo "$SERVICE_ATTRS"         | jq -r '.access_logs         // false')
 
 # --- Bucket name: compute once, then freeze ---------------------------------
 # CRITICAL: the bucket name must be IMMUTABLE after the first create.
@@ -51,6 +55,15 @@ else
     exit 1
   fi
   BUCKET_NAME=$(echo "${INSTANCE_NAME}-${BUCKET_NAME_SUFFIX}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)
+  # Names ending in -logs belong to access logs buckets (<bucket_name>-logs, see
+  # deployment/main.tf); a data bucket with one could be another service's logs bucket.
+  # Checked only when the service is created: a bucket that already exists keeps its
+  # name, so updating, linking or deleting a service created before this rule still works.
+  if [ "${ACTION_SOURCE:-}" = "service" ] && [ "${SERVICE_ACTION_TYPE:-}" = "create" ] \
+    && [[ "$BUCKET_NAME" == *-logs ]]; then
+    echo "ERROR: bucket name ${BUCKET_NAME} ends in -logs, which is reserved for access logs buckets. Choose a bucket_name_suffix that is not \"logs\" and does not end in \"-logs\"." >&2
+    exit 1
+  fi
   echo "Computed new bucket_name: ${BUCKET_NAME}"
 fi
 
@@ -136,7 +149,21 @@ export TOFU_MODULE_DIR="$SERVICE_PATH/deployment"
 
 export TOFU_INIT_VARIABLES="-backend-config=bucket=${TFSTATE_BUCKET} -backend-config=key=terraform.tfstate -backend-config=region=${REGION} -backend-config=use_lockfile=true"
 
-export TOFU_VARIABLES="-var=service_id=${SERVICE_ID} -var=region=${REGION} -var=bucket_name=${BUCKET_NAME} -var=versioning=${VERSIONING} -var=encryption=${ENCRYPTION} -var=public_access_block=${PUBLIC_ACCESS_BLOCK} -var=force_destroy=${FORCE_DESTROY}"
+# The variables go to tofu as a JSON file, never as words on its command line: several come
+# from the service's attributes. tofu converts "true"/"false" to the module's bool variables.
+export TOFU_VAR_FILE="$OUTPUT_DIR/np.tfvars.json"
+jq -n \
+  --arg service_id          "$SERVICE_ID" \
+  --arg region              "$REGION" \
+  --arg bucket_name         "$BUCKET_NAME" \
+  --arg versioning          "$VERSIONING" \
+  --arg encryption          "$ENCRYPTION" \
+  --arg public_access_block "$PUBLIC_ACCESS_BLOCK" \
+  --arg force_destroy       "$FORCE_DESTROY" \
+  --arg access_logs         "$ACCESS_LOGS" \
+  '{service_id: $service_id, region: $region, bucket_name: $bucket_name, versioning: $versioning,
+    encryption: $encryption, public_access_block: $public_access_block, force_destroy: $force_destroy,
+    access_logs: $access_logs}' > "$TOFU_VAR_FILE"
 
 # --- Extract link context (link workflows only) -----------------------------
 # These are consumed by build_permissions_context in the next workflow step.
@@ -150,4 +177,26 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
   LINK_ATTRS=$(echo "$CONTEXT" | jq -r '(.link.attributes // {}) * (.parameters // {})')
   export LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS" | jq -r '.access_level // "read-write"')
   export LINK_PATH_PREFIX=$(echo "$LINK_ATTRS"  | jq -r '.path_prefix  // ""')
+  # access-key (IAM user + static key) or role (IAM role, no key), chosen on create only. Any
+  # later action takes the mode from what the link stores, so an update cannot switch it (tofu
+  # would destroy one principal and create the other) and an unlink destroys what exists.
+  if [ "${SERVICE_ACTION_TYPE:-}" = "create" ]; then
+    LINK_CREDENTIALS=$(echo "$CONTEXT" | jq -r '.parameters.credentials // .link.attributes.credentials // "access-key"')
+  else
+    # A role link stores its role (link_access_key) and its credentials attribute; a key link its
+    # user. When the context carries none of them, the link itself is read.
+    STORED_LINK_ATTRS=$(echo "$CONTEXT" | jq -c '.link.attributes // {}')
+    if ! echo "$STORED_LINK_ATTRS" | jq -e 'any(.credentials, .role_arn, .iam_role_name, .iam_user_name, .aws_access_key_id; . != null and . != "")' >/dev/null; then
+      STORED_LINK_ATTRS=$(np link read --id "$LINK_ID" --format json | jq -c '.attributes // {}')
+    fi
+    LINK_CREDENTIALS=$(echo "$STORED_LINK_ATTRS" \
+      | jq -r 'if .credentials == "role" or (.role_arn // "") != "" or (.iam_role_name // "") != "" then "role" else "access-key" end')
+
+    REQUESTED_CREDENTIALS=$(echo "$CONTEXT" | jq -r '.parameters.credentials // ""')
+    if [ -n "$REQUESTED_CREDENTIALS" ] && [ "$REQUESTED_CREDENTIALS" != "$LINK_CREDENTIALS" ]; then
+      echo "ERROR: credentials cannot change after the link is created (link $LINK_ID uses $LINK_CREDENTIALS, the action asks for $REQUESTED_CREDENTIALS)." >&2
+      exit 1
+    fi
+  fi
+  export LINK_CREDENTIALS
 fi

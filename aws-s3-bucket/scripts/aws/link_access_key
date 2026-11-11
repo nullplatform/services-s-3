@@ -1,0 +1,160 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# link_access_key — The link's IAM access key, kept out of the OpenTofu state.
+#
+# OpenTofu manages the link's IAM user and its inline policy; the access key
+# is created here with the AWS CLI and its secret is written only to the link's
+# secret attribute, so no tfstate (or tfstate version) ever holds it.
+#
+# Set by the workflow YAML configuration block:
+#   LINK_KEY_ACTION — "ensure" (link, link-update) or "delete-all" (unlink)
+#
+#   ensure     Keeps the key the link already has. When the link has none, or
+#              its key no longer exists, deletes any key the link does not know
+#              about and creates one.
+#   delete-all Deletes every key of the user before `tofu destroy`, which can
+#              only delete a user with no access keys.
+#
+# Role links (LINK_CREDENTIALS=role) have no user and no key: `ensure` writes
+# the role's ARN and name (read from the module's outputs) to the link, and
+# `delete-all` has nothing to do.
+#
+# Expects (from build_context / build_permissions_context / do_tofu): $CONTEXT,
+# $IAM_USER_NAME, $LINK_CREDENTIALS, $OUTPUT_DIR (the applied module) and the
+# assumed role's AWS credentials in the environment.
+#
+# `np service workflow exec` sources every step into one shell, so an `exit`
+# here would end the whole workflow (unlink would skip `tofu destroy` and
+# still report success). The work lives in a function that returns instead;
+# only a failure exits, which is meant to stop the workflow.
+# ---------------------------------------------------------------------------
+
+link_access_key() {
+  local LINK_KEY_ACTION="${LINK_KEY_ACTION:-ensure}"
+  local CREDENTIALS="${LINK_CREDENTIALS:-access-key}"
+  # Local: steps share one shell, and the new secret must not outlive this step.
+  local LINK_ID_VAL KEYS LINK_KEY NEW_KEY LINK_ACCESS_KEY_ID LINK_SECRET_ACCESS_KEY ATTRS key
+  local ROLE_ARN ROLE_NAME LINK_ROLE
+  LINK_ID_VAL=$(echo "$CONTEXT" | jq -r '.link.id')
+
+  if [ -z "${IAM_USER_NAME:-}" ]; then
+    echo "ERROR: IAM_USER_NAME is not set. Expected to be exported by build_permissions_context." >&2
+    exit 1
+  fi
+
+  # The user's access key ids, one per line (empty when it has none).
+  list_keys() {
+    aws iam list-access-keys --user-name "$IAM_USER_NAME" --output json | jq -r '.AccessKeyMetadata[].AccessKeyId'
+  }
+
+  delete_key() {
+    echo "Deleting access key $1 of $IAM_USER_NAME"
+    aws iam delete-access-key --user-name "$IAM_USER_NAME" --access-key-id "$1"
+  }
+
+  if [ "$CREDENTIALS" = "role" ]; then
+    if [ "$LINK_KEY_ACTION" = "delete-all" ]; then
+      echo "Link $LINK_ID_VAL uses an IAM role; no access keys to delete."
+      return 0
+    fi
+    if [ "$LINK_KEY_ACTION" != "ensure" ]; then
+      echo "ERROR: unknown LINK_KEY_ACTION '$LINK_KEY_ACTION' (expected ensure or delete-all)." >&2
+      exit 1
+    fi
+
+    # The role the apply just converged, from this link's state: never rebuilt by hand.
+    if ! ROLE_ARN=$(tofu -chdir="$OUTPUT_DIR" output -raw role_arn) || [ -z "$ROLE_ARN" ]; then
+      echo "ERROR: the permissions module returned no role_arn for link $LINK_ID_VAL." >&2
+      exit 1
+    fi
+    if ! ROLE_NAME=$(tofu -chdir="$OUTPUT_DIR" output -raw iam_role_name) || [ -z "$ROLE_NAME" ]; then
+      echo "ERROR: the permissions module returned no iam_role_name for link $LINK_ID_VAL." >&2
+      exit 1
+    fi
+
+    LINK_ROLE=$(np link read --id "$LINK_ID_VAL" --format json | jq -r '[.attributes.role_arn // "", .attributes.iam_role_name // ""] | join(" ")')
+    if [ "$LINK_ROLE" = "$ROLE_ARN $ROLE_NAME" ]; then
+      echo "Link $LINK_ID_VAL keeps its role $ROLE_ARN."
+      return 0
+    fi
+
+    ATTRS=$(jq -n \
+      --arg role_arn      "$ROLE_ARN" \
+      --arg iam_role_name "$ROLE_NAME" \
+      '{role_arn: $role_arn, iam_role_name: $iam_role_name}')
+
+    echo "Updating link $LINK_ID_VAL attributes:"
+    echo "  role_arn:      $ROLE_ARN"
+    echo "  iam_role_name: $ROLE_NAME"
+
+    np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}" --no-output
+    echo "Link attributes updated successfully."
+    return 0
+  fi
+
+  if [ "$LINK_KEY_ACTION" = "delete-all" ]; then
+    if ! KEYS=$(list_keys 2>&1); then
+      if printf '%s' "$KEYS" | grep -q NoSuchEntity; then
+        echo "IAM user $IAM_USER_NAME not found; no access keys to delete."
+        return 0
+      fi
+      echo "ERROR: could not list the access keys of $IAM_USER_NAME: $KEYS" >&2
+      exit 1
+    fi
+    for key in $KEYS; do delete_key "$key"; done
+    return 0
+  fi
+
+  if [ "$LINK_KEY_ACTION" != "ensure" ]; then
+    echo "ERROR: unknown LINK_KEY_ACTION '$LINK_KEY_ACTION' (expected ensure or delete-all)." >&2
+    exit 1
+  fi
+
+  KEYS=$(list_keys)
+  LINK_KEY=$(np link read --id "$LINK_ID_VAL" --format json | jq -r '.attributes.aws_access_key_id // ""')
+
+  if [ -n "$LINK_KEY" ] && printf '%s\n' "$KEYS" | grep -qx "$LINK_KEY"; then
+    echo "Link $LINK_ID_VAL keeps its access key $LINK_KEY."
+    return 0
+  fi
+
+  # The link has no usable key. A key the link does not record is not in any
+  # app's parameters, so nothing can be using it: delete it (a user holds at most two).
+  for key in $KEYS; do delete_key "$key"; done
+
+  echo "Creating an access key for $IAM_USER_NAME (link $LINK_ID_VAL)..."
+  # Never in AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: those carry the assumed
+  # role's credentials that the calls above and below depend on.
+  NEW_KEY=$(aws iam create-access-key --user-name "$IAM_USER_NAME" --output json)
+  LINK_ACCESS_KEY_ID=$(echo "$NEW_KEY" | jq -r '.AccessKey.AccessKeyId // ""')
+  LINK_SECRET_ACCESS_KEY=$(echo "$NEW_KEY" | jq -r '.AccessKey.SecretAccessKey // ""')
+
+  if [ -z "$LINK_ACCESS_KEY_ID" ] || [ -z "$LINK_SECRET_ACCESS_KEY" ]; then
+    echo "ERROR: AWS did not return the new access key for $IAM_USER_NAME." >&2
+    exit 1
+  fi
+
+  # Only attributes unique to the link: bucket_name and bucket_region are already
+  # exposed by the service itself (see service-spec.json.tpl).
+  ATTRS=$(jq -n \
+    --arg access_key_id     "$LINK_ACCESS_KEY_ID" \
+    --arg secret_access_key "$LINK_SECRET_ACCESS_KEY" \
+    --arg iam_user_name     "$IAM_USER_NAME" \
+    '{
+      aws_access_key_id:     $access_key_id,
+      aws_secret_access_key: $secret_access_key,
+      iam_user_name:         $iam_user_name
+    }')
+
+  echo "Updating link $LINK_ID_VAL attributes:"
+  echo "  aws_access_key_id:     $LINK_ACCESS_KEY_ID"
+  echo "  aws_secret_access_key: ****"
+  echo "  iam_user_name:         $IAM_USER_NAME"
+
+  np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}" --no-output
+  echo "Link attributes updated successfully."
+}
+
+link_access_key
