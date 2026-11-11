@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.8](https://github.com/nullplatform/services-s-3/compare/v0.5.7...v0.5.8) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** update dependency opentofu/opentofu to v1.13.2 ([#57](https://github.com/nullplatform/services-s-3/issues/57)) ([8e3fcb2](https://github.com/nullplatform/services-s-3/commit/8e3fcb25abcf4c7670ad9d4c85d80fdc160fc697))
+
+## [0.5.7](https://github.com/nullplatform/services-s-3/compare/v0.5.6...v0.5.7) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.6 to 2.0.7 ([#55](https://github.com/nullplatform/services-s-3/issues/55)) ([963080c](https://github.com/nullplatform/services-s-3/commit/963080c4e406b9d5948ce3a8f90f53ef8bc15b38))
+
 ## [0.5.6](https://github.com/nullplatform/services-s-3/compare/v0.5.5...v0.5.6) (2026-10-26)
 
 
