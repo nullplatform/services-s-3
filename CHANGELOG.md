@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/nullplatform/services-s-3/compare/v0.5.8...v0.6.0) (2026-11-11)
+
+
+### Features
+
+* **package:** publish as "AWS S3 Bucket" with the np-aws-s3-bucket slug ([9c352c3](https://github.com/nullplatform/services-s-3/commit/9c352c3f859152f149ea6e182dd2ebf959e17a5b))
+* **package:** publish the service as a global package ([c31b112](https://github.com/nullplatform/services-s-3/commit/c31b11208d94ee6f40a8918bca43f568b8a9bc93))
+* **publish:** a prerelease does not move the package default ([8df8b24](https://github.com/nullplatform/services-s-3/commit/8df8b2423318593513548389d75132005aac4123))
+
 ## [0.5.8](https://github.com/nullplatform/services-s-3/compare/v0.5.7...v0.5.8) (2026-11-02)
 
 
