@@ -192,7 +192,12 @@ if [ "${ACTION_SOURCE:-}" = "link" ]; then
     LINK_CREDENTIALS=$(echo "$STORED_LINK_ATTRS" \
       | jq -r 'if .credentials == "role" or (.role_arn // "") != "" or (.iam_role_name // "") != "" then "role" else "access-key" end')
 
-    REQUESTED_CREDENTIALS=$(echo "$CONTEXT" | jq -r '.parameters.credentials // ""')
+    # Only an update asks for a mode. An unlink's parameters carry the spec's defaults
+    # (credentials=access-key even on a role link), so they say nothing about the link.
+    REQUESTED_CREDENTIALS=""
+    if [ "${SERVICE_ACTION_TYPE:-}" = "update" ]; then
+      REQUESTED_CREDENTIALS=$(echo "$CONTEXT" | jq -r '.parameters.credentials // ""')
+    fi
     if [ -n "$REQUESTED_CREDENTIALS" ] && [ "$REQUESTED_CREDENTIALS" != "$LINK_CREDENTIALS" ]; then
       echo "ERROR: credentials cannot change after the link is created (link $LINK_ID uses $LINK_CREDENTIALS, the action asks for $REQUESTED_CREDENTIALS)." >&2
       exit 1
