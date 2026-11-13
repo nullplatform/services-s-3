@@ -70,12 +70,20 @@ resource "aws_iam_policy" "nullplatform_s3" {
   })
 }
 
-# --- IAM management (per-link IAM users + access keys) ------------------------
+# --- IAM management (per-link IAM users + access keys, per-link IAM roles) ----
+# Link users and roles are named np-s3-<16 hex chars of the link id>; both
+# statements match exactly that shape (16 '?'), not every np-s3-* name, so roles
+# or users an operator named np-s3-... stay out of reach. A permissions boundary
+# can be set when a link principal is created (IAM authorizes that like a
+# Put*PermissionsBoundary, so Put* is not denied; it is not allowed either) and
+# never removed (the explicit Deny). A mandatory boundary (CreateRole/CreateUser/
+# PutRolePolicy/PutUserPolicy conditioned on iam:PermissionsBoundary) needs a
+# boundary policy to exist first; that is tracked separately.
 resource "aws_iam_policy" "nullplatform_s3_iam" {
   count = local.iam_create ? 1 : 0
 
   name        = "${local.policies_name_prefix}_s3_iam_policy"
-  description = "Policy for managing per-link IAM users and access keys for S3 bucket access"
+  description = "Policy for managing per-link IAM users, access keys and roles for S3 bucket access"
   tags        = local.iam_default_tags
 
   policy = jsonencode({
@@ -103,7 +111,40 @@ resource "aws_iam_policy" "nullplatform_s3_iam" {
           "iam:ListGroupsForUser",
           "iam:RemoveUserFromGroup"
         ],
-        "Resource" : "*"
+        "Resource" : "arn:aws:iam::*:user/np-s3-????????????????"
+      },
+      {
+        "Sid" : "LinkRoles",
+        "Effect" : "Allow",
+        "Action" : [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:GetRole",
+          "iam:UpdateRole",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          # The AWS provider lists the role's instance profiles before DeleteRole.
+          "iam:ListInstanceProfilesForRole",
+          "iam:UpdateAssumeRolePolicy"
+        ],
+        "Resource" : "arn:aws:iam::*:role/np-s3-????????????????"
+      },
+      {
+        "Sid" : "NoLinkBoundaryRemoval",
+        "Effect" : "Deny",
+        "Action" : [
+          "iam:DeleteRolePermissionsBoundary",
+          "iam:DeleteUserPermissionsBoundary"
+        ],
+        "Resource" : [
+          "arn:aws:iam::*:role/np-s3-*",
+          "arn:aws:iam::*:user/np-s3-*"
+        ]
       }
     ]
   })

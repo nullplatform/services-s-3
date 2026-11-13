@@ -11,5 +11,20 @@
 # Run "aws sso login --profile <name>" before starting np-agent locally.
 aws_profile: ""
 
+# Role links (link attribute credentials = role): comma-separated IAM role ARNs
+# allowed to assume each link's role. Put only the S3 browser worker's role here
+# ("arn:aws:iam::<account>:role/<worker-role>"): every listed principal can assume
+# every role link's role, so an app's role here would reach other apps' buckets.
+# Exact role ARNs only; an account root or an IAM user is rejected. The LINK_ROLE_TRUSTED_PRINCIPALS environment
+# variable on the agent wins over this value. Creating or updating a role link
+# fails while this list is empty; unlink and access-key links ignore it.
+link_role_trusted_principals: ""
+
+# Optional IAM policy ARN set as the permissions boundary of every link user and
+# role ("arn:aws:iam::<account>:policy/<name>"). LINK_PERMISSIONS_BOUNDARY_ARN on
+# the agent wins over this value. It applies to links created after it is set:
+# existing link users and roles keep the boundary they were created with.
+link_permissions_boundary_arn: ""
+
 provider_categories:
   - identity-access-control

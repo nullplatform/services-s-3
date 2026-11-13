@@ -5,10 +5,12 @@ set -euo pipefail
 # build_permissions_context — Prepares the Terraform execution environment
 # for link actions (link/unlink). Runs AFTER build_context, which has set:
 #   $CONTEXT, $VALUES, $SERVICE_PATH, $LINK_ID, $LINK_ACCESS_LEVEL,
-#   $LINK_PATH_PREFIX, $TFSTATE_BUCKET, $REGION
+#   $LINK_PATH_PREFIX, $LINK_CREDENTIALS, $TFSTATE_BUCKET, $REGION
 #
-# This script creates a dedicated IAM user (+ access key) per link, with
-# an inline policy scoped to the target S3 bucket.
+# The permissions module creates a dedicated IAM principal per link, with an
+# inline policy scoped to the target S3 bucket: an IAM user (access-key links,
+# whose key link_access_key creates) or an IAM role that only the configured
+# trusted principals can assume (role links).
 # ---------------------------------------------------------------------------
 
 # IMPORTANT: This script has its own yaml_value() function.
@@ -41,12 +43,12 @@ fi
 SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
 SERVICE_ATTRS=$(echo "$CONTEXT" | jq -r '.service.attributes // {}')
 
+# The permissions module builds the bucket ARN from the name itself.
 BUCKET_NAME=$(echo "$SERVICE_ATTRS"   | jq -r '.bucket_name   // ""')
-BUCKET_ARN=$(echo "$SERVICE_ATTRS"    | jq -r '.bucket_arn    // ""')
 BUCKET_REGION=$(echo "$SERVICE_ATTRS" | jq -r '.bucket_region // ""')
 
-if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ARN" ]; then
-  echo "ERROR: bucket_name/bucket_arn not found in service attributes." >&2
+if [ -z "$BUCKET_NAME" ]; then
+  echo "ERROR: bucket_name not found in service attributes." >&2
   echo "       Has the bucket been created and write_service_outputs completed?" >&2
   exit 1
 fi
@@ -56,11 +58,41 @@ if [ -n "$BUCKET_REGION" ]; then
   export REGION="$BUCKET_REGION"
 fi
 
-# --- Derive link-specific IAM user name from link ID -----------------------
-# Deterministic: always produces the same name for the same link.
+# --- Derive link-specific IAM principal name from link ID ------------------
+# Deterministic: always produces the same name for the same link. It names the
+# IAM user (access-key) or the IAM role (role); the S3 browser rebuilds the
+# role's name the same way, so this derivation must not change.
 # Format: np-s3-<first 16 hex chars of link ID>  (~22 chars, safe for IAM)
 
 IAM_USER_NAME="np-s3-$(echo "${LINK_ID}" | tr -d '-' | cut -c1-16 | tr '[:upper:]' '[:lower:]')"
+export IAM_USER_NAME
+
+# --- Credentials mode and role trust -------------------------------------------
+# Role links are assumable only by the exact role ARNs configured here (env wins
+# over values.yaml), comma-separated; the module rejects anything else.
+
+LINK_CREDENTIALS="${LINK_CREDENTIALS:-access-key}"
+if [ "$LINK_CREDENTIALS" != "access-key" ] && [ "$LINK_CREDENTIALS" != "role" ]; then
+  echo "ERROR: unknown link credentials '$LINK_CREDENTIALS' (expected access-key or role)." >&2
+  exit 1
+fi
+
+# Only role links get the list: a bad entry must not break access-key links.
+TRUSTED_PRINCIPAL_ARNS="[]"
+if [ "$LINK_CREDENTIALS" = "role" ]; then
+  TRUSTED_PRINCIPALS="${LINK_ROLE_TRUSTED_PRINCIPALS:-$(yaml_value "link_role_trusted_principals" "" "$VALUES")}"
+  TRUSTED_PRINCIPAL_ARNS=$(jq -nc --arg list "$TRUSTED_PRINCIPALS" \
+    '$list | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+fi
+PERMISSIONS_BOUNDARY_ARN="${LINK_PERMISSIONS_BOUNDARY_ARN:-$(yaml_value "link_permissions_boundary_arn" "" "$VALUES")}"
+
+# Unlink (delete) destroys the role whatever the list holds, so it never needs one.
+if [ "$LINK_CREDENTIALS" = "role" ] && [ "$TRUSTED_PRINCIPAL_ARNS" = "[]" ] && [ "${SERVICE_ACTION_TYPE:-}" != "delete" ]; then
+  echo "ERROR: link $LINK_ID uses credentials=role, but no principal may assume its role." >&2
+  echo "       Set LINK_ROLE_TRUSTED_PRINCIPALS or link_role_trusted_principals in values.yaml" >&2
+  echo "       (comma-separated IAM role ARNs; only the S3 browser worker's role)." >&2
+  exit 1
+fi
 
 # --- Prepare link-specific working directory --------------------------------
 # Override OUTPUT_DIR so each link has its own isolated workspace and tfstate.
@@ -74,4 +106,28 @@ export TOFU_MODULE_DIR="$SERVICE_PATH/permissions"
 
 export TOFU_INIT_VARIABLES="-backend-config=bucket=${TFSTATE_BUCKET} -backend-config=key=services/aws-s3-bucket/${SERVICE_ID}/links/${LINK_ID}.tfstate -backend-config=region=${REGION} -backend-config=use_lockfile=true"
 
-export TOFU_VARIABLES="-var=link_id=${LINK_ID} -var=region=${REGION} -var=bucket_name=${BUCKET_NAME} -var=bucket_arn=${BUCKET_ARN} -var=iam_user_name=${IAM_USER_NAME} -var=access_level=${LINK_ACCESS_LEVEL:-read-write} -var=path_prefix=${LINK_PATH_PREFIX:-}"
+# Unlink only destroys, so the policy's contents don't matter there. Sending the stored prefix
+# would let one an older release accepted (with *, ? or $) fail validation after the keys are
+# already deleted, leaving the link stuck without credentials.
+TOFU_PATH_PREFIX="${LINK_PATH_PREFIX:-}"
+if [ "${SERVICE_ACTION_TYPE:-}" = "delete" ]; then
+  TOFU_PATH_PREFIX=""
+fi
+
+# The variables go to tofu as a JSON file, not as words on its command line: path_prefix and
+# access_level come from the link's attributes, so each value must reach tofu as one value.
+export TOFU_VAR_FILE="$OUTPUT_DIR/np.tfvars.json"
+jq -n \
+  --arg     link_id                  "$LINK_ID" \
+  --arg     region                   "$REGION" \
+  --arg     bucket_name              "$BUCKET_NAME" \
+  --arg     principal_name           "$IAM_USER_NAME" \
+  --arg     credentials              "$LINK_CREDENTIALS" \
+  --argjson trusted_principal_arns   "$TRUSTED_PRINCIPAL_ARNS" \
+  --arg     permissions_boundary_arn "$PERMISSIONS_BOUNDARY_ARN" \
+  --arg     access_level             "${LINK_ACCESS_LEVEL:-read-write}" \
+  --arg     path_prefix              "$TOFU_PATH_PREFIX" \
+  '{link_id: $link_id, region: $region, bucket_name: $bucket_name, principal_name: $principal_name,
+    credentials: $credentials, trusted_principal_arns: $trusted_principal_arns,
+    permissions_boundary_arn: $permissions_boundary_arn,
+    access_level: $access_level, path_prefix: $path_prefix}' > "$TOFU_VAR_FILE"
