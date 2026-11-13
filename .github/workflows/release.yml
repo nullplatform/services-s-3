@@ -47,9 +47,6 @@ jobs:
     with:
       image_name: services/s3
       existing_tag: ${{ inputs.existing_tag || '' }}
-      # Keeps the ?ref=vX.Y.Z install examples in the READMEs on the new tag.
-      # Only refs to this repository move; tofu-modules refs keep their own tag.
-      update_readme_versions: true
       package_stack_dir: aws-s3-bucket/publish
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
