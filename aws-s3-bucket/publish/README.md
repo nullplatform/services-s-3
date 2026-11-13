@@ -25,6 +25,3 @@ Not every publish moves the package default, the revision an organization that i
 | secret | `PACKAGE_TFSTATE_REGION` | Region of that bucket, a secret for the same reason |
 | variable | `NP_ARTIFACT_NRN` | Publisher organization NRN (already used to register the image) |
 
-## First publish
-
-The platform creates the default action specifications when the service specification is created, so the package can only pin them on a later apply. Run the first apply once with `-var publish_package=false`; every release after that publishes normally.

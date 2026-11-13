@@ -25,14 +25,15 @@ locals {
   package_slug = "np-aws-s3-bucket"
   service_path = "aws-s3-bucket"
   # The release tag the workflow passes, as the artifact registration takes it.
-  # Null only on the bootstrap apply, which publishes no revision.
+  # Null outside the release workflow (a plain validate); the guard below
+  # refuses to publish without it.
   version = var.release_tag == null ? null : trimprefix(var.release_tag, "v")
 
   # Whether this revision becomes the package default — what an organization
   # that installs without pinning a version is born with. A stable release
   # promotes; a prerelease (any semver with a `-`, such as 0.6.0-rc.1) is
   # published without moving the default. promote_default forces either.
-  # Without a version (the bootstrap) nothing is published, so the value is moot.
+  # Without a version nothing is published, so the value is moot.
   promote_default = (
     var.promote_default != null ? var.promote_default :
     local.version == null ? false :
@@ -45,12 +46,12 @@ locals {
 resource "terraform_data" "release_guard" {
   lifecycle {
     precondition {
-      condition     = !var.publish_package || var.image_digest != null
-      error_message = "image_digest is required to publish a package revision (only the bootstrap apply with publish_package = false may omit it)."
+      condition     = var.image_digest != null
+      error_message = "image_digest is required: it pins the package revision to the image this release pushed."
     }
     precondition {
-      condition     = !var.publish_package || var.release_tag != null
-      error_message = "release_tag is required to publish a package revision: it is the revision's version (only the bootstrap apply with publish_package = false may omit it)."
+      condition     = var.release_tag != null
+      error_message = "release_tag is required: it is the package revision's version."
     }
   }
 }
@@ -74,7 +75,7 @@ module "service_definition" {
   service_name = "AWS S3 Bucket"
   service_slug = local.package_slug
 
-  package = var.publish_package ? {
+  package = {
     slug       = local.package_slug
     version    = local.version
     default    = local.promote_default
@@ -89,5 +90,5 @@ module "service_definition" {
         digest     = var.image_digest
       }
     }]
-  } : null
+  }
 }

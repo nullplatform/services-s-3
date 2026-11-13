@@ -25,17 +25,6 @@ variable "image_digest" {
   }
 }
 
-variable "publish_package" {
-  description = <<-EOT
-    Publish the package revision. Set to false only for the one-time bootstrap
-    apply: the platform creates the default action specifications
-    (use_default_actions) when the service spec is created, and the package can
-    only pin them on a later apply.
-  EOT
-  type        = bool
-  default     = true
-}
-
 variable "image_registry" {
   description = "Registry host of the worker image."
   type        = string
