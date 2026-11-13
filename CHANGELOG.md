@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/nullplatform/services-s-3/compare/v0.6.0...v0.6.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **test:** releasable commit for the extra-files dry run ([20dc83e](https://github.com/nullplatform/services-s-3/commit/20dc83e7c7f9ba8cba9883df87b439796fa339e6))
+
 ## [0.6.0](https://github.com/nullplatform/services-s-3/compare/v0.5.8...v0.6.0) (2026-11-11)
 
 
