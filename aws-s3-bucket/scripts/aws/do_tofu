@@ -23,7 +23,7 @@ TOFU_ACTION="${TOFU_ACTION:-apply}"
 # ---------------------------------------------------------------------------
 if ! command -v tofu &>/dev/null; then
   # 1.10+ is required for native S3 state locking (use_lockfile=true).
-  TOFU_VERSION="1.11.6"
+  TOFU_VERSION="1.13.9"
   TOFU_BIN_DIR="/tmp/np-tofu-bin"
   TOFU_BIN="$TOFU_BIN_DIR/tofu"
 
