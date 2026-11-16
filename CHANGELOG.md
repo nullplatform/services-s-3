@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/nullplatform/services-s-3/compare/v0.6.0...v0.6.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** update dependency opentofu/opentofu to v1.13.9 ([#67](https://github.com/nullplatform/services-s-3/issues/67)) ([5b66359](https://github.com/nullplatform/services-s-3/commit/5b66359c3c8bf6196e5031c32d44398d82888d54))
+
 ## [0.6.0](https://github.com/nullplatform/services-s-3/compare/v0.5.8...v0.6.0) (2026-11-11)
 
 
