@@ -1,0 +1,66 @@
+[tools]
+bun = "latest"
+
+[tasks.install]
+description = "Install dependencies"
+run = "bun install"
+sources = ["package.json", "bun.lock"]
+
+[tasks.test]
+description = "Run tests"
+depends = ["install"]
+run = "bun run test"
+
+[tasks.describe]
+description = "Print the package manifest (what np package publish reads)"
+depends = ["install"]
+run = "bun run describe"
+
+[tasks.build]
+description = "Compile the worker to a standalone executable"
+depends = ["install"]
+run = "bun run build"
+sources = ["src/**/*.ts", "package.json", "bun.lock"]
+outputs = ["dist/s3-browser"]
+
+[tasks.dev]
+description = "Run the worker in dev mode (hot reload)"
+depends = ["install"]
+run = "bun run dev"
+
+[tasks."build:image"]
+description = "Build the lean gRPC worker image"
+run = "docker build -t s3-browser-worker:dev ."
+
+# `np package run` → a controlplane agent in Docker (worker orchestrator, docker backend) that
+# spawns this worker and streams package-exec commands to it — the same shape as production.
+# Needs NP_API_KEY. AWS credentials for the worker go in NP_PACKAGE_ENV_JSON, e.g.
+#   NP_PACKAGE_ENV_JSON='{"AWS_ACCESS_KEY_ID":"…","AWS_SECRET_ACCESS_KEY":"…","AWS_SESSION_TOKEN":"…","AWS_REGION":"us-east-1"}'
+[tasks.run]
+description = "Run locally: an agent (docker backend) that spawns this worker"
+depends = ["build:image"]
+run = """
+set -eu
+: "${NP_API_KEY:?set NP_API_KEY}"
+slug="s3-browser"
+env_json='{}'
+[ -n "${NP_PACKAGE_ENV_JSON:-}" ] && env_json="$NP_PACKAGE_ENV_JSON"
+worker_rules='[{"match":{"package":"'"$slug"'"},"env":'"$env_json"'}]'
+docker rm -f np-s3-browser-agent >/dev/null 2>&1 || true
+stale=$(docker ps -aq --filter "name=np-worker-.*-${slug}-")
+[ -n "$stale" ] && docker rm -f $stale >/dev/null 2>&1
+docker run --rm --name np-s3-browser-agent --network host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e NP_API_KEY -e NP_LOG_LEVEL="${NP_LOG_LEVEL:-INFO}" \
+  -e NP_WORKER_BACKEND=docker \
+  -e NP_WORKER_IMAGE=s3-browser-worker:dev \
+  -e NP_WORKER_RULES="$worker_rules" \
+  "${NP_AGENT_IMAGE:-public.ecr.aws/nullplatform/controlplane-agent:latest}" \
+  -runtime=host -tags=package:"$slug",local:"${NP_LOCAL_USER:-$USER}"
+"""
+
+# `np package publish` runs this when --image is omitted: build, push to $NP_PUSH_REGISTRY and
+# print registry/repo@sha256:<digest> for the CLI to register as the package's worker image.
+[tasks."publish:image"]
+description = "Build + push the worker image; prints its digest ref"
+run = "bash scripts/publish-image.sh"
