@@ -41,7 +41,7 @@
           "title": "Credentials",
           "default": "access-key",
           "editableOn": ["create"],
-          "description": "How the app authenticates to the bucket. access-key: a dedicated IAM user with a static access key (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). role: no static key; a dedicated IAM role (ROLE_ARN) for the S3 browser, which only the principals trusted by this service can assume. Cannot be changed after the link is created.",
+          "description": "How the app authenticates to the bucket. access-key: a dedicated IAM user with a static access key (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). role: no static key and no credentials for the app; a dedicated IAM role for the S3 browser worker, which only the principals trusted by this service can assume. Cannot be changed after the link is created.",
           "order": 3
         },
         "aws_access_key_id": {
@@ -72,10 +72,10 @@
         "role_arn": {
           "type": "string",
           "title": "Role ARN",
-          "export": {"type": "environment_variable"},
+          "export": false,
           "visibleOn": ["read"],
           "editableOn": [],
-          "description": "IAM role the app assumes to reach the bucket (auto-populated after link creation; role links only)",
+          "description": "IAM role the S3 browser worker assumes for this link (auto-populated; role links only). The application cannot assume it.",
           "order": 6
         },
         "iam_role_name": {

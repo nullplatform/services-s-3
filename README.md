@@ -8,7 +8,7 @@ The service lives under [`aws-s3-bucket/`](./aws-s3-bucket) to keep the repo ope
 
 - Provisions an S3 bucket via OpenTofu (versioning, server-side encryption, public access block, optional server access logs to a separate bucket)
 - Creates a dedicated IAM user (or, for role links, an IAM role) per link with an inline policy scoped to the bucket (and optional path prefix)
-- Exposes `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` per access-key link (each linked app gets its own IAM user), or `ROLE_ARN` per role link, plus `BUCKET_NAME` / `BUCKET_ARN` / `BUCKET_REGION` from the service itself
+- Exposes `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` per access-key link (each linked app gets its own IAM user), plus `BUCKET_NAME` / `BUCKET_ARN` / `BUCKET_REGION` from the service itself. A role link exposes no credentials: its role is for the S3 browser worker, and the app cannot assume it
 - Stores per-instance OpenTofu state in a dedicated bucket (`np-service-<SERVICE_ID>`) with native S3 locking (`use_lockfile=true`)
 
 ## Repository Layout
@@ -76,7 +76,7 @@ Only credentials are exposed at the link level — bucket identity (name / ARN /
 |---|---|---|
 | `aws_access_key_id` | plain | IAM user access key ID (access-key links) |
 | `aws_secret_access_key` | secret | IAM user secret access key (access-key links) |
-| `role_arn` | plain | IAM role to assume (role links) |
+| `role_arn` | not exported | IAM role the S3 browser worker assumes (role links). The application cannot assume it |
 
 ## Workflows
 
@@ -229,9 +229,9 @@ Access-key links use static IAM access keys. Rotate by re-creating the link or m
 
 ### Role links
 
-A link created with `credentials: role` gets an IAM role `np-s3-<first 16 hex chars of the link id>` with the same bucket policy an access-key link's user would get, and no access key. Its trust policy allows `sts:AssumeRole` only to the exact role ARNs configured on the agent, comma-separated, in `LINK_ROLE_TRUSTED_PRINCIPALS` (env) or `link_role_trusted_principals` (`values.yaml`); account roots and IAM users are rejected, and creating or updating a role link fails while the list is empty (unlink does not need it). Access-key links ignore the list. Sessions last at most one hour. The link exposes the role as `role_arn`.
+A link created with `credentials: role` gets an IAM role `np-s3-<first 16 hex chars of the link id>` with the same bucket policy an access-key link's user would get, and no access key. Its trust policy allows `sts:AssumeRole` only to the exact role ARNs configured on the agent, comma-separated, in `LINK_ROLE_TRUSTED_PRINCIPALS` (env) or `link_role_trusted_principals` (`values.yaml`); account roots and IAM users are rejected, and creating or updating a role link fails while the list is empty (unlink does not need it). Access-key links ignore the list. Sessions last at most one hour. The link keeps the role's ARN in `role_arn`, which is not exported: a role link gives the application no credentials.
 
-The list is one for the whole service, not per link: every principal on it can assume every role link's role, for every bucket and application. Role names derive from link ids and `role_arn` is exported to the app, so the ARNs are not secret. Put only the S3 browser worker's role on the list, never an application's workload role; giving each app its own trust would need a per-link list, which this service does not have.
+The list is one for the whole service, not per link: every principal on it can assume every role link's role, for every bucket and application. Role names derive from link ids and `role_arn` is visible on the link, so the ARNs are not secret. Put only the S3 browser worker's role on the list, never an application's workload role; giving each app its own trust would need a per-link list, which this service does not have.
 
 An optional permissions boundary (`LINK_PERMISSIONS_BOUNDARY_ARN` or `link_permissions_boundary_arn`) is set on every link user and role at creation. Links created before it was set keep no boundary (the module ignores later boundary changes), and the requirements policy denies removing one.
 
