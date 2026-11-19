@@ -66,7 +66,7 @@ session of the link's IAM role; never with the worker's identity. The full contr
 ```
 plugin ── POST /catalog/actions/s3_browser/{application_id}/{action} {input:{linkId,…}} ──▶ catalog (sync)
 catalog ── notification (source catalog) ──▶ agent channel (specification.slug == s3_browser) ──▶ agent ──▶ this worker (package aws-s3-bucket)
-worker ── verify the execution in the catalog, read link (+secrets unless a role link), read its service ──▶ S3 with the link's keys or role
+worker ── verify the execution in the catalog, read link, ask authz for the user's permission on it, read its secrets (unless a role link) and its service ──▶ S3 with the link's keys or role
 catalog ◀── 200 with the worker's JSON (or a failed record "<CODE>: <message>") ◀──────────┘
 ```
 
@@ -89,30 +89,37 @@ Checks, in order (all mandatory):
 
 1. `delete-object` needs `S3_BROWSER_ALLOW_WRITES=1` (`WRITES_DISABLED`, before any lookup).
 2. The execution is verified with the agent's key, without cache: `GET /catalog/actions/s3_browser/executions/{id}`
-   must be `pending` and of the same action; its `input` gives every field (`link_id` included) and its `entity_nrn`
-   must be exactly an application NRN; an execution id runs once per worker process (`EXECUTION_NOT_VERIFIED`).
+   must be `pending` and of the same action; its `input` gives every field (`link_id` included), its `entity_nrn`
+   must be exactly an application NRN and its `actor_id` (with `actor_type` `user`) is the user who ran it; an
+   execution id runs once per worker process (`EXECUTION_NOT_VERIFIED`).
 3. `GET /link/{link_id}` without secret attributes (never cached; `LINK_NOT_FOUND`).
 4. The link's `entity_nrn` is the entity's NRN or under it (`:` boundary), e.g. a scope of the app (`LINK_NOT_OWNED`).
-5. The link is `active` (`LINK_NOT_READY`). Then, by the link's `credentials` attribute:
-   - `access-key` or absent: `GET /link/{link_id}?include_secret_attributes=true` (never cached), checks 4–5 again, and
-     the link must have `aws_access_key_id`/`aws_secret_access_key` (`LINK_NOT_READY`).
+5. The user who ran the execution holds the link's own services permission, asked to authz at the link's `entity_nrn`
+   (`GET /authz?nrn=&action=&user_id=`, never cached): `service:link:read` for the four reads, `service:link:write` for
+   `delete-object` (`LINK_ACCESS_DENIED`). A check that cannot be made opens nothing (`PERMISSION_CHECK_FAILED`).
+6. The link is `active` (`LINK_NOT_READY`) and its `browser_enabled` attribute is `true`; off, absent or anything else
+   refuses (`LINK_BROWSER_DISABLED`). Then, by the link's `credentials` attribute:
+   - `access-key` or absent: `GET /link/{link_id}?include_secret_attributes=true` (never cached), checks 4 and 6 again,
+     and the link must have `aws_access_key_id`/`aws_secret_access_key` (`LINK_NOT_READY`).
    - `role`: no secret is read. The role ARN is rebuilt from the link id, `arn:<partition>:iam::<account>:role/np-s3-<first
      16 chars of the id without dashes, lowercased>`, with `S3_BROWSER_LINK_ROLE_ACCOUNT_ID` / `S3_BROWSER_LINK_ROLE_PARTITION`
      (`LINK_ROLE_NOT_CONFIGURED` without a valid account); a `role_arn` on the link that differs is refused
      (`LINK_ROLE_MISMATCH`), never assumed.
-6. Bucket and region come only from the link's service, which must be an accepted specification (`NOT_A_BUCKET`, `NO_BUCKET`).
-7. Every prefix and key stays under the link's `path_prefix` (an empty list prefix lists at it) (`OUTSIDE_PREFIX`).
-8. `delete-object` needs `access_level` `write` or `read-write` (`WRITE_NOT_ALLOWED`).
-9. Role links only, after every check above: STS `AssumeRole` on the rebuilt ARN with the worker's own identity, session
-   `s3-browser-<execution id>`, 900 s, in the bucket's region (`LINK_ROLE_DENIED` when STS refuses).
+7. Bucket and region come only from the link's service, which must be an accepted specification (`NOT_A_BUCKET`, `NO_BUCKET`).
+8. Every prefix and key stays under the link's `path_prefix` (an empty list prefix lists at it) (`OUTSIDE_PREFIX`).
+9. `delete-object` needs `access_level` `write` or `read-write` (`WRITE_NOT_ALLOWED`).
+10. Role links only, after every check above: STS `AssumeRole` on the rebuilt ARN with the worker's own identity, session
+    `s3-browser-<execution id>`, 900 s, in the bucket's region (`LINK_ROLE_DENIED` when STS refuses).
 
 | CODE | Status | When |
 |---|---|---|
 | `BAD_REQUEST`, `UNKNOWN_ACTION` | 400 | malformed input |
-| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution of that action, invalid recorded input, `entity_nrn` missing or not an application NRN, replay, or a catalog read failed |
+| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution of that action, invalid recorded input, no user on the record, `entity_nrn` missing or not an application NRN, replay, or a catalog read failed |
 | `LINK_NOT_FOUND` | 404 | the link does not exist |
 | `LINK_NOT_OWNED` | 403 | the link belongs to another application |
+| `LINK_ACCESS_DENIED` | 403 | the user who ran the execution lacks `service:link:read` (or `service:link:write`, for a delete) on the link |
 | `LINK_NOT_READY` | 409 | the link is not active or has no keys yet |
+| `LINK_BROWSER_DISABLED` | 403 | the link's `browser_enabled` attribute is not `true` |
 | `LINK_ROLE_NOT_CONFIGURED` | 409 | a role link while `S3_BROWSER_LINK_ROLE_ACCOUNT_ID` is unset or not 12 digits (or the partition is invalid) |
 | `LINK_ROLE_MISMATCH` | 403 | the role link's `role_arn` is not the role rebuilt from its id |
 | `LINK_ROLE_DENIED` | 403 | STS refused the `AssumeRole` (the worker's role is not trusted by the link's role, or the role does not exist); STS's own message goes to the worker's log only |
@@ -121,7 +128,7 @@ Checks, in order (all mandatory):
 | `WRITE_NOT_ALLOWED` | 403 | delete on a `read` link |
 | `WRITES_DISABLED` | 405 | delete without `S3_BROWSER_ALLOW_WRITES=1` |
 | S3 / STS error names (`AccessDenied`, `NoSuchKey`, `CredentialsProviderError`, …) | 403/404/500/502 | from AWS |
-| `PLATFORM`, `NO_CREDENTIALS`, `WORKER` | ≥500 | failed execution (e.g. the link's secret came back masked) |
+| `PLATFORM`, `PERMISSION_CHECK_FAILED`, `NO_CREDENTIALS`, `WORKER` | ≥500 | failed execution (e.g. the link's secret came back masked, or authz did not answer the permission check) |
 
 The keys and role sessions never appear in stdout, stderr, logs or error messages (S3 and STS error
 messages are scrubbed of them). One exception by design: a presigned URL carries the access key id in
@@ -135,6 +142,8 @@ Files in [`catalog/`](catalog/): [`s3_browser.specification.json`](catalog/s3_br
 [`s3_browser.executors.json`](catalog/s3_browser.executors.json) (five `notification` executors,
 15 s), [`s3_browser.channel.example.json`](catalog/s3_browser.channel.example.json) (agent channel).
 To grant the delete, add e.g. `{ "principals": [{ "type": "role", "id": 9 }], "actions": ["action:delete-object"] }`.
+The catalog's gate (`entity:write` on the application) and these grants decide who may run an action at all; on top of
+them the worker asks for the link's own permission (check 5) and for the link's `browser_enabled` (check 6).
 
 ### Interim demo flag: `S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1` (off by default)
 
@@ -168,6 +177,10 @@ against a real API.
 - To confirm: that an agent API key can hold `service:link:read-secrets` and catalog read on
   `s3_browser` executions (and entities, for the demo flag only).
 - To confirm once deployed: `entity_nrn` on `GET /catalog/actions/s3_browser/executions/{id}`.
+- Confirmed in catalog-entities-api source: the record's `actor_id` is the `user` of the token that ran the action, and
+  `actor_type` is always `user` (`BaseController.getActor`).
+- Confirmed in main-auth-z-api source, and with one request from an API key that is not root: `GET /authz?nrn=&action=&user_id=`
+  answers `{ "granted": true|false }` with a 200 about another user. To confirm: the same with the agent's API key.
 - Installer list queries: `GET /notification/channel?nrn=…` and `GET /link?nrn=…&show_descendants=true&limit=&offset=`.
 
 ## Environment

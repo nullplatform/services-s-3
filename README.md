@@ -58,6 +58,7 @@ Exposed in the nullplatform UI when creating/updating the service:
 | `access_level` | enum | `read-write` | `read`, `write`, `read-write` |
 | `path_prefix` | string | `""` | Scope IAM permissions to a key prefix (empty = full bucket) |
 | `credentials` | enum | `access-key` | `access-key` (IAM user + static key) or `role` (IAM role, no static key; for the S3 browser). Set on create only |
+| `browser_enabled` | boolean | `false` | Lets the people who can read the link (`service:link:read`) browse the bucket from the dashboard's S3 browser, with the link's access level and path prefix. Off, the S3 browser refuses the link. Changes no IAM permission |
 
 ## Service Attributes (post-create, exported as env vars)
 

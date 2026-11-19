@@ -44,6 +44,14 @@
           "description": "How the app authenticates to the bucket. access-key: a dedicated IAM user with a static access key (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). role: no static key and no credentials for the app; a dedicated IAM role for the S3 browser worker, which only the principals trusted by this service can assume. Cannot be changed after the link is created.",
           "order": 3
         },
+        "browser_enabled": {
+          "type": "boolean",
+          "title": "S3 browser",
+          "default": false,
+          "editableOn": ["create", "update"],
+          "description": "Let the people who can read this link browse the bucket from the dashboard, with this link's access level and path prefix. Off by default: turn it on only when everyone who can see the link may also see the files.",
+          "order": 4
+        },
         "aws_access_key_id": {
           "type": "string",
           "title": "AWS Access Key ID",
@@ -51,7 +59,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "IAM user access key ID (auto-populated after link creation; access-key links only)",
-          "order": 4
+          "order": 5
         },
         "aws_secret_access_key": {
           "type": "string",
@@ -60,7 +68,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "IAM user secret access key (auto-populated, delivered as secret env var; access-key links only)",
-          "order": 5
+          "order": 6
         },
         "iam_user_name": {
           "type": "string",
@@ -76,7 +84,7 @@
           "visibleOn": ["read"],
           "editableOn": [],
           "description": "IAM role the S3 browser worker assumes for this link (auto-populated; role links only). The application cannot assume it.",
-          "order": 6
+          "order": 7
         },
         "iam_role_name": {
           "type": "string",

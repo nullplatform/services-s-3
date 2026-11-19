@@ -30,7 +30,7 @@ const actions: Record<string, { name: string; execution: string; input: object; 
 const ajv = new Ajv({ strict: false });
 
 const APP_NRN = "organization=1:account=2:namespace=3:application=4";
-const executions = new Map<string, { id: string; entity_id: string; entity_specification_id: string; action: string; status: string; input: unknown; entity_nrn: string }>();
+const executions = new Map<string, { id: string; entity_id: string; entity_specification_id: string; action: string; status: string; input: unknown; actor_type: string; actor_id: string; entity_nrn: string }>();
 const platform: Platform = {
   async getExecution(_slug, id) {
     const found = executions.get(id);
@@ -46,8 +46,11 @@ const platform: Platform = {
   async getSpecification(id) {
     return { id, slug: "aws-s3-bucket" };
   },
+  async isActionGranted() {
+    return true;
+  },
   async getLink(id) {
-    return { id, status: "active", service_id: "svc-1", entity_nrn: APP_NRN, attributes: { access_level: "read-write", path_prefix: "", aws_access_key_id: "AKIAEXAMPLE", aws_secret_access_key: "example-secret" } };
+    return { id, status: "active", service_id: "svc-1", entity_nrn: APP_NRN, attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, aws_access_key_id: "AKIAEXAMPLE", aws_secret_access_key: "example-secret" } };
   },
 };
 const store: ObjectStore = {
@@ -86,7 +89,7 @@ const minimal: Record<string, Record<string, unknown>> = {
 let sequence = 0;
 const envelope = (slug: string, input: unknown) => {
   const id = `exec-${++sequence}`;
-  executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, entity_nrn: APP_NRN });
+  executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, actor_type: "user", actor_id: "u-1", entity_nrn: APP_NRN });
   return payload(id, slug, input);
 };
 // What the link-mode route is handed: the catalog's context, unwrapped from its `{ notification }`.

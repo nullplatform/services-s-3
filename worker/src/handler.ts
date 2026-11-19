@@ -43,6 +43,18 @@ export function normalisePathPrefix(value: unknown): string {
 
 const WRITE_LEVELS = new Set(["write", "read-write"]);
 
+/**
+ * The services permission the user who ran the execution needs on the link, per operation: the
+ * one that reads a link for reading its bucket, the one that changes a link for changing it.
+ */
+export const LINK_PERMISSION: Record<Command["action"], string> = {
+  "list-objects": "service:link:read",
+  "head-object": "service:link:read",
+  "read-object": "service:link:read",
+  "presign-download": "service:link:read",
+  "delete-object": "service:link:write",
+};
+
 /** An s3_browser entity lives exactly at an application, never at a namespace or above. */
 export const APPLICATION_NRN = /^organization=\d+:account=\d+:namespace=\d+:application=(\d+)$/;
 
@@ -91,7 +103,7 @@ export function createReplayGuard({ max = 10_000, ttlMs = 600_000, now = Date.no
  * record of that execution (read through the specification-scoped route, never cached) must be
  * pending and of the same operation; the operation's fields come from its `input`, and the NRN
  * the link must belong to is its `entity_nrn` — the NRN the catalog authorized the execution
- * against — which must be exactly an application NRN.
+ * against — which must be exactly an application NRN. The user who ran it is its `actor_id`.
  */
 export async function verifyExecution(platform: Platform, command: Command, config: Pick<HandlerConfig, "unverifiedEntityBinding" | "warn"> = {}): Promise<Command> {
   const { execution_id: executionId, specification_slug: slug, envelope_application_id: claimedApplication } = command.link!;
@@ -112,6 +124,9 @@ export async function verifyExecution(platform: Platform, command: Command, conf
   } catch (error) {
     throw notVerified(`the recorded input is invalid (${(error as Error).message})`);
   }
+  // The catalog records the user of the token that ran the action; the link's permission is asked for them.
+  if (record.actor_type !== "user" || typeof record.actor_id !== "string" || !record.actor_id) throw notVerified(`execution ${executionId} names no user`);
+  const actorId = record.actor_id;
 
   let entityNrn: string | undefined;
   if (record.entity_nrn !== undefined && record.entity_nrn !== null) {
@@ -129,7 +144,7 @@ export async function verifyExecution(platform: Platform, command: Command, conf
   } else {
     throw notVerified(`execution ${executionId} carries no entity_nrn`);
   }
-  verified.link = { execution_id: executionId, specification_slug: slug, link_id: verified.link!.link_id, entity_nrn: entityNrn };
+  verified.link = { execution_id: executionId, specification_slug: slug, link_id: verified.link!.link_id, entity_nrn: entityNrn, actor_id: actorId };
   return verified;
 }
 
@@ -141,10 +156,34 @@ interface LinkScope {
   pathPrefix: string;
 }
 
-/** The link belongs to the verified application and is active. */
-function checkLink(link: Link, linkId: string, entityNrn: string): Link {
+/** The link belongs to the verified application. */
+function checkOwned(link: Link, linkId: string, entityNrn: string): Link {
   if (!linkOwnedBy(link.entity_nrn, entityNrn)) throw new CommandError(`link ${linkId} does not belong to this application`, 403, "LINK_NOT_OWNED");
+  return link;
+}
+
+/**
+ * The user who ran the execution holds the services permission this operation needs, at the
+ * link's own NRN: the same check the services API makes to read or change the link. A check that
+ * cannot be made refuses, as a worker failure.
+ */
+async function checkPermission(platform: Platform, command: Command, link: Link): Promise<void> {
+  const { link_id: linkId, actor_id: actorId } = command.link!;
+  const permission = LINK_PERMISSION[command.action];
+  let granted: boolean;
+  try {
+    granted = await platform.isActionGranted(actorId, permission, link.entity_nrn as string);
+  } catch (error) {
+    if (error instanceof PlatformError && error.code === "NO_CREDENTIALS") throw error;
+    throw new PlatformError(`the permission of user ${actorId} on link ${linkId} could not be checked (${(error as Error)?.message ?? String(error)})`, 502, "PERMISSION_CHECK_FAILED");
+  }
+  if (!granted) throw new CommandError(`user ${actorId} may not ${command.action} on link ${linkId}: it needs ${permission} on the link`, 403, "LINK_ACCESS_DENIED");
+}
+
+/** The link is active and the S3 browser is turned on for it (`browser_enabled`; off unless set). */
+function checkOpen(link: Link, linkId: string): Link {
   if (link.status !== "active") throw new CommandError(`link ${linkId} is not active (status ${link.status ?? "unknown"})`, 409, "LINK_NOT_READY");
+  if (link.attributes?.browser_enabled !== true) throw new CommandError(`the S3 browser is not enabled for link ${linkId} (its browser_enabled attribute is off)`, 403, "LINK_BROWSER_DISABLED");
   return link;
 }
 
@@ -212,16 +251,21 @@ async function resolveRoleLink(platform: Platform, command: Command, config: Han
 }
 
 /**
- * Link mode, in the contract's order: the link must exist, belong to the entity's application,
- * be active with keys (or, for a role link, the role assumable); the bucket comes only from its
- * service; reads and writes stay under its `path_prefix`; deletes need a write access level.
+ * Link mode, in the contract's order: the link must exist and belong to the entity's application;
+ * the user who ran the execution must hold the link's permission for the operation; the link must
+ * be active, with the S3 browser enabled, and with keys (or, for a role link, the role assumable);
+ * the bucket comes only from its service; reads and writes stay under its `path_prefix`; deletes
+ * need a write access level.
  */
 async function resolveLink(platform: Platform, command: Command, config: HandlerConfig, secrets: string[], assumeRole: AssumeRole): Promise<LinkScope> {
   const { link_id: linkId, entity_nrn: entityNrn } = command.link!;
   // Without secrets first: a role link's are never read, and a refused link costs no secret read.
-  const plain = checkLink(await platform.getLink(linkId, { secrets: false }), linkId, entityNrn);
+  const plain = checkOwned(await platform.getLink(linkId, { secrets: false }), linkId, entityNrn);
+  // The user's permission before the link's state: without it, nothing about the link is told.
+  await checkPermission(platform, command, plain);
+  checkOpen(plain, linkId);
   if (plain.attributes?.credentials === "role") return resolveRoleLink(platform, command, config, secrets, assumeRole, plain);
-  const link = checkLink(await platform.getLink(linkId), linkId, entityNrn);
+  const link = checkOpen(checkOwned(await platform.getLink(linkId), linkId, entityNrn), linkId);
   const attributes = link.attributes ?? {};
   const accessKeyId = attributes.aws_access_key_id;
   const secretAccessKey = attributes.aws_secret_access_key;

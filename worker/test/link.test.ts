@@ -24,7 +24,7 @@ const baseLink = (overrides: Partial<Link> & { attributes?: Record<string, unkno
   service_id: "svc-bucket",
   entity_nrn: APP_NRN,
   ...overrides,
-  attributes: { access_level: "read-write", path_prefix: "", aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...(overrides.attributes ?? {}) },
+  attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...(overrides.attributes ?? {}) },
 });
 
 const ROLE_ACCOUNT = "123456789012";
@@ -38,7 +38,7 @@ const roleLink = (overrides: Partial<Link> & { attributes?: Record<string, unkno
   service_id: "svc-bucket",
   entity_nrn: APP_NRN,
   ...overrides,
-  attributes: { access_level: "read-write", path_prefix: "", credentials: "role", role_arn: ROLE_ARN, iam_role_name: "np-s3-0a1b2c3d4e5f6789", ...(overrides.attributes ?? {}) },
+  attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, credentials: "role", role_arn: ROLE_ARN, iam_role_name: "np-s3-0a1b2c3d4e5f6789", ...(overrides.attributes ?? {}) },
 });
 
 // The catalog as the worker sees it: execution records and entities. `linkEnvelope` records a
@@ -48,9 +48,18 @@ const executions = new Map<string, CatalogExecution>();
 const entities = new Map<string, CatalogEntity>([["4", { application_id: "4", nrn: APP_NRN, created_at: "2026-01-01T00:00:00.000Z" }]]);
 const catalogReads: string[] = [];
 
-function fakePlatform(links: Record<string, Link>) {
+/** What authz answers for a user, an action and an NRN; every user holds everything unless a test says otherwise. */
+type Grants = (userId: string, action: string, nrn: string) => boolean | Promise<boolean>;
+
+function fakePlatform(links: Record<string, Link>, grants: Grants = () => true) {
   const seen: string[] = [];
+  // The permission checks, apart from `seen`: "<user> <action> <nrn>".
+  const asked: string[] = [];
   const platform: Platform = {
+    async isActionGranted(userId, action, nrn) {
+      asked.push(`${userId} ${action} ${nrn}`);
+      return grants(userId, action, nrn);
+    },
     async getExecution(slug, id) {
       catalogReads.push(`execution ${slug} ${id}`);
       const found = executions.get(id);
@@ -84,7 +93,7 @@ function fakePlatform(links: Record<string, Link>) {
       return { ...found, attributes };
     },
   };
-  return { platform, seen };
+  return { platform, seen, asked };
 }
 
 function recordingStore() {
@@ -144,12 +153,12 @@ const delivered = (document: string) => JSON.parse(document).notification as Rec
 const runCommand = (document: string, handler: Handler, options?: ParseOptions) => runPayload(delivered(document), handler, options);
 const parseCommand = (document: string, options?: ParseOptions) => parsePayload(delivered(document), options);
 
-function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, extra: { unverifiedEntityBinding?: boolean } = {}) {
-  const { platform, seen } = fakePlatform(links);
+function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, { grants, ...extra }: { unverifiedEntityBinding?: boolean; grants?: Grants } = {}) {
+  const { platform, seen, asked } = fakePlatform(links, grants);
   const { store, calls } = recordingStore();
   const warnings: string[] = [];
   const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites, ...extra, warn: (message) => warnings.push(message) } });
-  return { handler, seen, calls, warnings };
+  return { handler, seen, asked, calls, warnings };
 }
 
 describe("link mode: protocol", () => {
@@ -259,6 +268,82 @@ describe("link mode: handler", () => {
       const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
       expect(parse(result).error).toMatchObject({ status: 409, code: "LINK_NOT_READY" });
       expect(calls).toHaveLength(0);
+    }
+  });
+
+  test("LINK_BROWSER_DISABLED: the link's browser_enabled is off, absent, or anything but true", async () => {
+    for (const value of [false, undefined, null, "true", 1]) {
+      const { handler, calls, seen } = setup({ "lnk-1": baseLink({ attributes: { browser_enabled: value } }) });
+      const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
+      expect(result.success).toBe(true);
+      expect(parse(result).error).toMatchObject({ status: 403, code: "LINK_BROWSER_DISABLED" });
+      expect(calls).toHaveLength(0);
+      // Refused on the read without secrets: the keys are never read.
+      expect(seen).toEqual(["link lnk-1"]);
+    }
+  });
+
+  test("the user who ran the execution needs the link's read permission, asked at the link's own NRN", async () => {
+    const scopeNrn = `${APP_NRN}:scope=9`;
+    const { handler, asked } = setup({ "lnk-1": baseLink(), "lnk-2": baseLink({ id: "lnk-2", entity_nrn: scopeNrn }) });
+    for (const [slug, input] of [["list-objects", {}], ["head-object", { key: "a.txt" }], ["read-object", { key: "a.txt" }], ["presign-download", { key: "a.txt" }]] as const) {
+      expect(parse(await runCommand(linkEnvelope(slug, { link_id: "lnk-1", ...input }), handler)).error).toBeUndefined();
+    }
+    await runCommand(linkEnvelope("list-objects", { link_id: "lnk-2" }), handler);
+    // Once per execution, for the user the catalog recorded, not the one the envelope names.
+    expect(asked).toEqual([...Array(4).fill(`u-1 service:link:read ${APP_NRN}`), `u-1 service:link:read ${scopeNrn}`]);
+    const other = setup();
+    await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { user: { id: "u-forged" } }, { actor_id: "u-7" }), other.handler);
+    expect(other.asked).toEqual([`u-7 service:link:read ${APP_NRN}`]);
+  });
+
+  test("LINK_ACCESS_DENIED: without the permission nothing is read, and nothing about the link's state is told", async () => {
+    for (const link of [baseLink(), baseLink({ status: "pending" }), baseLink({ attributes: { browser_enabled: false } })]) {
+      const { handler, calls, seen, asked } = setup({ "lnk-1": link }, false, { grants: () => false });
+      const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
+      expect(result.success).toBe(true);
+      expect(parse(result).error).toMatchObject({ status: 403, code: "LINK_ACCESS_DENIED" });
+      expect(parse(result).error.message).toContain("service:link:read");
+      expect(calls).toHaveLength(0);
+      expect(seen).toEqual(["link lnk-1"]);
+      expect(asked).toEqual([`u-1 service:link:read ${APP_NRN}`]);
+    }
+    // A link of another application is refused before anyone's permission is asked.
+    const foreign = setup({ "lnk-1": baseLink({ entity_nrn: "organization=1:account=2:namespace=3:application=5" }) }, false, { grants: () => false });
+    expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), foreign.handler)).error.code).toBe("LINK_NOT_OWNED");
+    expect(foreign.asked).toEqual([]);
+  });
+
+  test("a delete asks for the permission that changes the link", async () => {
+    const reader = setup(undefined, true, { grants: (_user, action) => action === "service:link:read" });
+    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), reader.handler)).error).toMatchObject({ status: 403, code: "LINK_ACCESS_DENIED" });
+    expect(reader.asked).toEqual([`u-1 service:link:write ${APP_NRN}`]);
+    expect(reader.calls).toHaveLength(0);
+    const writer = setup(undefined, true, { grants: (_user, action) => action === "service:link:write" });
+    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), writer.handler))).toEqual({ key: "a.txt" });
+  });
+
+  test("a permission check that cannot be made is a worker failure, and opens nothing", async () => {
+    const { handler, calls, seen } = setup(undefined, false, {
+      grants: () => {
+        throw new PlatformError("/authz answered HTTP 503");
+      },
+    });
+    const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
+    expect(result).toMatchObject({ success: false, errorCode: "PERMISSION_CHECK_FAILED" });
+    expect(parse(result).error).toMatchObject({ status: 502, code: "PERMISSION_CHECK_FAILED" });
+    expect(calls).toHaveLength(0);
+    expect(seen).toEqual(["link lnk-1"]);
+  });
+
+  test("an execution that names no user is not verified", async () => {
+    for (const record of [{ actor_id: null }, { actor_id: "" }, { actor_id: undefined }, { actor_type: "service" }, { actor_type: null }]) {
+      const { handler, seen, asked } = setup();
+      const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, record), handler);
+      expect(parse(result).error).toMatchObject({ status: 403, code: "EXECUTION_NOT_VERIFIED" });
+      expect(parse(result).error.message).toContain("names no user");
+      expect(seen).toEqual([]);
+      expect(asked).toEqual([]);
     }
   });
 
@@ -533,6 +618,23 @@ describe("link mode: platform", () => {
       "GET https://api.test/catalog/instances/s3_browser/ent-4",
     ]);
     await expect(client.getExecution("s3_browser", "missing")).rejects.toMatchObject({ status: 404 });
+  });
+
+  test("asks authz whether a user holds an action at an NRN, never from cache; only an explicit true is a yes", async () => {
+    const seen: string[] = [];
+    const answers: unknown[] = [{ granted: true }, { granted: false }, { granted: "true" }, {}];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      if (String(url).endsWith("/token")) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
+      seen.push(String(url));
+      if (String(url).includes("user_id=down")) return new Response("{}", { status: 503 });
+      return new Response(JSON.stringify(answers.shift()), { status: 200 });
+    }) as typeof fetch;
+    const client = createPlatform({ apiUrl: "https://api.test", apiKey: "k", fetchImpl });
+    const ask = () => client.isActionGranted("42", "service:link:read", `${APP_NRN}:scope=9`);
+    expect([await ask(), await ask(), await ask(), await ask()]).toEqual([true, false, false, false]);
+    const url = "https://api.test/authz?nrn=organization%3D1%3Aaccount%3D2%3Anamespace%3D3%3Aapplication%3D4%3Ascope%3D9&action=service%3Alink%3Aread&user_id=42";
+    expect(seen).toEqual([url, url, url, url]);
+    await expect(client.isActionGranted("down", "service:link:read", APP_NRN)).rejects.toBeInstanceOf(PlatformError);
   });
 });
 
@@ -867,6 +969,7 @@ describe("link mode: role links", () => {
     const cases: Array<[Link, string, Record<string, unknown>, boolean, number, string]> = [
       [roleLink({ entity_nrn: "organization=1:account=2:namespace=3:application=5" }), "list-objects", {}, false, 403, "LINK_NOT_OWNED"],
       [roleLink({ status: "pending" }), "list-objects", {}, false, 409, "LINK_NOT_READY"],
+      [roleLink({ attributes: { browser_enabled: false } }), "list-objects", {}, false, 403, "LINK_BROWSER_DISABLED"],
       [roleLink({ service_id: undefined }), "list-objects", {}, false, 409, "LINK_NOT_READY"],
       [roleLink({ service_id: "svc-db" }), "list-objects", {}, false, 400, "NOT_A_BUCKET"],
       [roleLink({ attributes: { path_prefix: "uploads" } }), "head-object", { key: "other/a.txt" }, false, 403, "OUTSIDE_PREFIX"],

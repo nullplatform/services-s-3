@@ -1,6 +1,7 @@
 /**
  * The little link mode reads from nullplatform: the catalog's record of the execution, the link,
- * its service and the service's specification. Reads use the agent's API key (NP_API_KEY,
+ * its service, the service's specification, and whether the user who ran the execution holds a
+ * permission on the link. Reads use the agent's API key (NP_API_KEY,
  * injected at spawn), so the worker can only ever see its own organization — that is the tenancy
  * check.
  */
@@ -44,6 +45,8 @@ export interface Platform {
   getExecution(specificationSlug: string, id: string): Promise<CatalogExecution>;
   /** A catalog entity (`GET /catalog/instances/{slug}/{id}`). Never cached. */
   getEntity(specificationSlug: string, id: string): Promise<CatalogEntity>;
+  /** Whether a user holds a platform action at an NRN (`GET /authz?nrn=&action=&user_id=`). Never cached. */
+  isActionGranted(userId: string, action: string, nrn: string): Promise<boolean>;
 }
 
 /** An action execution record as catalog-entities-api serializes it. */
@@ -138,6 +141,9 @@ export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey
     getLink,
     getExecution: (slug, id) => fresh<CatalogExecution>(`/catalog/actions/${encodeURIComponent(slug)}/executions/${encodeURIComponent(id)}`),
     getEntity: (slug, id) => fresh<CatalogEntity>(`/catalog/instances/${encodeURIComponent(slug)}/${encodeURIComponent(id)}`),
+    // authz answers `{ granted }` with a 200 either way; only an explicit true is a yes.
+    isActionGranted: async (userId, action, nrn) =>
+      (await fresh<{ granted?: unknown }>(`/authz?nrn=${encodeURIComponent(nrn)}&action=${encodeURIComponent(action)}&user_id=${encodeURIComponent(userId)}`)).granted === true,
   };
 }
 

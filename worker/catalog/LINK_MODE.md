@@ -15,6 +15,10 @@ plugin → `POST /catalog/actions/s3_browser/{application_id}/{action}` `{ input
 service) with the document `{"notification": <context>}`; its `link-mode` route answers it (worker/src/plugin.ts)
 → stdout JSON → back as the execution record (HTTP 200).
 
+Who may browse a link, all of it mandatory: the catalog's gate and grant above (today `entity:write` on the application
+and the specification's `action:<slug>` grant), then, in the worker, the user's own services permission on the link
+(`service:link:read`, or `service:link:write` to delete; step 3b) and the link's `browser_enabled` switch (step 4).
+
 Catalog context the worker receives (catalog-entities-api `ActionContext`):
 `{ id, action: "catalog:action:create", slug: "<action slug>", input: {...}, status, specification: { id, slug: "s3_browser" }, entity: {...}, entity_nrn: "<entity NRN>", user: { id } }`.
 
@@ -58,10 +62,13 @@ Worker codes in link mode (CODE → status):
 | CODE | status | when |
 |---|---|---|
 | `BAD_REQUEST` / `UNKNOWN_ACTION` | 400 | malformed input |
-| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution with that id and action in the catalog, invalid recorded input, `entity_nrn` missing (flag off) or not exactly an application NRN, a replayed execution id, or a catalog read failed |
+| `EXECUTION_NOT_VERIFIED` | 403 | no pending execution with that id and action in the catalog, invalid recorded input, no user on the record, `entity_nrn` missing (flag off) or not exactly an application NRN, a replayed execution id, or a catalog read failed |
 | `LINK_NOT_FOUND` | 404 | `GET /link/{id}` is 404 |
 | `LINK_NOT_OWNED` | 403 | link.entity_nrn is neither the entity NRN nor under it (`entity_nrn + ":"` prefix) |
+| `LINK_ACCESS_DENIED` | 403 | authz does not grant the user who ran the execution `service:link:read` (reads) or `service:link:write` (delete) at `link.entity_nrn` |
 | `LINK_NOT_READY` | 409 | link status not `active`, or (key link) no `aws_access_key_id`/`aws_secret_access_key` |
+| `LINK_BROWSER_DISABLED` | 403 | the link's `browser_enabled` attribute is not `true` (off, absent, or any other value) |
+| `PERMISSION_CHECK_FAILED` | 502 | the permission check could not be made (authz unreachable, or refusing the worker); a failed execution, nothing is opened |
 | `LINK_ROLE_NOT_CONFIGURED` | 409 | role link while `S3_BROWSER_LINK_ROLE_ACCOUNT_ID` is unset or not 12 digits (or `S3_BROWSER_LINK_ROLE_PARTITION` is invalid) |
 | `LINK_ROLE_MISMATCH` | 403 | role link whose `role_arn` attribute is not the ARN rebuilt from its id |
 | `LINK_ROLE_DENIED` | 403 | STS `AssumeRole` on the rebuilt ARN answered AccessDenied (fixed message; STS's, which names the worker's identity, is only logged) |
@@ -88,7 +95,9 @@ Worker codes in link mode (CODE → status):
    **All operation fields (`link_id`, `prefix`, `token`, `limit`, `key`, `max_bytes`) come from `record.input`**, validated
    with the same rules; the envelope's `input` and `entity_nrn` are ignored. The NRN the link must belong to is
    `record.entity_nrn` (the NRN the catalog authorized the execution against), which must match
-   `^organization=\d+:account=\d+:namespace=\d+:application=\d+$`; absent, null or not matching → refused. Each execution
+   `^organization=\d+:account=\d+:namespace=\d+:application=\d+$`; absent, null or not matching → refused. The user who
+   ran it is `record.actor_id`, with `record.actor_type === "user"` (the catalog fills both from the token of the request);
+   absent or of another type → refused, and the envelope's `user` is ignored. Each execution
    id runs at most once per worker process (see Residual risks). Any failure → `EXECUTION_NOT_VERIFIED` (403).
 1c. **Interim demo flag, default off: `S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1`.** Only when `record.entity_nrn` is absent or
    null (the catalog change that adds it is not deployed yet), the worker reads the entity named by the envelope,
@@ -100,18 +109,26 @@ Worker codes in link mode (CODE → status):
    `agent:run_command` can pair a real pending execution (of an entity they can write) with another application's id.
    Keep the flag off. This is not the only way such a caller reaches another application's bucket: the bash route
    trusts its envelope too (see Residual risks).
-2. Read the link with the agent's API key, first **without** secret attributes: `GET /link/{link_id}`. Steps 3–4 run on
-   that read. Then, by the link's `credentials` attribute:
+2. Read the link with the agent's API key, first **without** secret attributes: `GET /link/{link_id}`. Steps 3, 3b and 4
+   run on that read. Then, by the link's `credentials` attribute:
    - `access-key` or absent: read it again including secret attributes
      (query `include_secret_attributes=true`; needs `service:link:read-secrets` on the agent key — both confirmed in
-     main-service-api source) and run steps 3–4 again on that read; the keys must be present.
+     main-service-api source) and run steps 3 and 4 again on that read; the keys must be present.
    - `role`: no secret is read. The role ARN is **rebuilt from the link id**, never taken from the link:
      `arn:${S3_BROWSER_LINK_ROLE_PARTITION:-aws}:iam::${S3_BROWSER_LINK_ROLE_ACCOUNT_ID}:role/np-s3-<first 16 chars of the
      link id without dashes, lowercased>` (the aws-s3-bucket service's derivation). No valid account → `LINK_ROLE_NOT_CONFIGURED`;
      a `role_arn` attribute that differs → `LINK_ROLE_MISMATCH`.
    Never cache link reads beyond the request; never log or return the keys.
 3. Ownership: `link.entity_nrn === <verified entity NRN>` or starts with `<verified entity NRN> + ":"`. Otherwise `LINK_NOT_OWNED`.
-4. `link.status` must be `active`.
+3b. Permission of the user who ran the execution (`record.actor_id`), once per request, with the agent's key and never
+   cached: `GET /authz?nrn=<link.entity_nrn>&action=<permission>&user_id=<actor_id>`, where the permission is
+   `service:link:read` for `list-objects`, `head-object`, `read-object` and `presign-download`, and `service:link:write`
+   for `delete-object`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
+   but `{ "granted": true }` → `LINK_ACCESS_DENIED`; a check that fails → `PERMISSION_CHECK_FAILED`. It runs before
+   step 4, so a user without the permission learns nothing about the link's state.
+4. `link.status` must be `active` (`LINK_NOT_READY`), and `link.attributes.browser_enabled` must be `true`: off, absent
+   or any other value → `LINK_BROWSER_DISABLED`. It is the link's own switch (aws-s3-bucket link specification, default
+   `false`), set by whoever creates or edits the link; links created before it existed read as off.
 5. Bucket and region come **only** from the link's service (`GET /service/{link.service_id}` → spec matches
    `S3_BROWSER_SPECIFICATIONS`, `attributes.bucket_name`, `attributes.bucket_region`). Never from the input.
 6. `path_prefix` (link attribute, may be empty): normalise to end with `/` when non-empty. list with empty
@@ -120,7 +137,7 @@ Worker codes in link mode (CODE → status):
    `WRITES_DISABLED` still applies first. Reads are left to AWS (the `write` level has no GetObject).
 8. S3 client built with the link's static credentials, a fresh client per request (never cached, never shared); a
    request without them is refused, so S3 is never opened with the worker's identity.
-9. Role links: only after steps 3–7 pass, STS `AssumeRole` on the rebuilt ARN with the worker's own identity (the
+9. Role links: only after steps 3–7 pass (3b included), STS `AssumeRole` on the rebuilt ARN with the worker's own identity (the
    bounded default chain), `RoleSessionName` `s3-browser-<execution id>` (64 chars max, `[\w+=,.@-]`),
    `DurationSeconds` 900, in the bucket's region; AccessDenied → `LINK_ROLE_DENIED`. The session's credentials are
    scrubbed like the keys and used as in step 8. The link's role trusts only the exact role ARNs in the service's
@@ -140,6 +157,8 @@ Worker codes in link mode (CODE → status):
   plugin's message codes); other failures → platform errors.
 - Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null,
   `delete-object` returns `{ key }`).
+- A link whose `browser_enabled` attribute is not `true` is listed as "Not enabled" and is not opened: the plugin says
+  it is turned on by editing the link, and does not call the worker for it.
 
 ## Binding the execution to its entity (resolved: catalog change pending deploy)
 
@@ -178,6 +197,15 @@ the sync answer is recorded.
 - **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design) and, for a role link, the
   session token in `X-Amz-Security-Token`; the secret never leaves the worker. A role link's URL (and `expires_at`)
   is capped at the end of its 900 s session.
+- **The permission check leans on authz answering about another user.** `GET /authz?nrn=&action=&user_id=` answers any
+  authenticated token about any user today (the "only your own user" guard is on `check_roles` alone). If authz
+  restricts it, every request fails closed with `PERMISSION_CHECK_FAILED` until the worker's key is allowed to ask.
+- **A personal API key's narrowing is not applied in step 3b.** The check is about the user (`actor_id`), so an
+  execution run with a narrowed personal key is checked with its owner's permissions on the link. The catalog's gate did
+  apply the narrowing.
+- **The catalog's gate is still `entity:write`.** The specification is installed per organization, and only a global
+  specification may declare another gate (`authorization.platform`), so a user needs both `entity:write` on the
+  application and the link's permission.
 - **Role links trust the worker's role, not the request.** Any process holding the worker's AWS identity can assume
   every link role in the account; the link checks above are what bind a request to one link.
 
@@ -196,6 +224,11 @@ as `invalid_output`. Output schemas therefore describe only the success shape.
 - To confirm: that an agent API key can be granted `service:link:read-secrets` and catalog read on `s3_browser`
   executions (and, only for the demo flag, entities) across the organization.
 - To confirm once deployed: `entity_nrn` on the execution read.
+- Confirmed in catalog-entities-api source: `actor_id` on the execution record is the `user` of the token that ran the
+  action and `actor_type` is always `user` (`BaseController.getActor`, `EntityService.executeAction`).
+- Confirmed in main-auth-z-api source, and with one request from an API key that is not root:
+  `GET /authz?nrn=&action=&user_id=` answers `{ "granted": true|false }` (200) about another user. To confirm: the same
+  with the agent's API key, and `actor_id` on the execution read in a deployed catalog.
 
 ## Install (not run yet)
 

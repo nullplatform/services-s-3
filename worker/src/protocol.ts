@@ -30,10 +30,10 @@ export interface Command {
   max_bytes?: number;
   /**
    * From the payload: the execution id and specification slug (and, for the opt-in unverified
-   * fallback only, the application id it claims). `link_id` and `entity_nrn` are empty until the
-   * handler fills them from the catalog's record of the execution.
+   * fallback only, the application id it claims). `link_id`, `entity_nrn` and `actor_id` (the user
+   * who ran the execution) are empty until the handler fills them from the catalog's record of it.
    */
-  link?: { execution_id: string; specification_slug: string; envelope_application_id?: string; link_id: string; entity_nrn: string };
+  link?: { execution_id: string; specification_slug: string; envelope_application_id?: string; link_id: string; entity_nrn: string; actor_id: string };
 }
 
 /** A refusal the caller can act on; `status` follows HTTP semantics for the UI's messages. */
@@ -82,7 +82,7 @@ export function parseCommand(payload: Record<string, unknown>, options: ParseOpt
   }
   const entity = record(payload.entity);
   const claimed = entity?.application_id ?? entity?.id;
-  const command: Command = { action: operation as Action, prefix: "", limit: 200, link: { execution_id: executionId, specification_slug: record(payload.specification)!.slug as string, link_id: "", entity_nrn: "" } };
+  const command: Command = { action: operation as Action, prefix: "", limit: 200, link: { execution_id: executionId, specification_slug: record(payload.specification)!.slug as string, link_id: "", entity_nrn: "", actor_id: "" } };
   if ((typeof claimed === "string" || typeof claimed === "number") && /^\d+$/.test(String(claimed))) command.link!.envelope_application_id = String(claimed);
   return command;
 }
@@ -123,6 +123,6 @@ export function parseLinkOperation(operation: unknown, rawInput: unknown): Comma
     if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > READ_MAX_BYTES) throw new CommandError(`max_bytes must be an integer between 1 and ${READ_MAX_BYTES}`, 400);
     command.max_bytes = maxBytes;
   }
-  command.link = { execution_id: "", specification_slug: "", link_id: linkId, entity_nrn: "" };
+  command.link = { execution_id: "", specification_slug: "", link_id: linkId, entity_nrn: "", actor_id: "" };
   return command;
 }
