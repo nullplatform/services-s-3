@@ -1,0 +1,17 @@
+#!/bin/bash
+# A stand-in for the service's bash entrypoint: says how it was run, and fails when the
+# document asks it to (`"fixture":"fail"`, `"fixture":"silent-fail"`).
+set -u
+[ -n "${FIXTURE_LOG:-}" ] && echo ran >> "$FIXTURE_LOG"
+case "$NP_ACTION_CONTEXT" in
+  *'"fixture":"silent-fail"'*) exit 7 ;;
+esac
+echo "args=$*"
+echo "context=$NP_ACTION_CONTEXT"
+echo "inherited=${FIXTURE_INHERITED:-unset}"
+echo "imds=${AWS_EC2_METADATA_DISABLED:-unset}"
+echo "warning on stderr" >&2
+case "$NP_ACTION_CONTEXT" in
+  *'"fixture":"fail"'*) echo "tofu apply failed" >&2; exit 3 ;;
+esac
+exit 0

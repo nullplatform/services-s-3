@@ -29,9 +29,28 @@
           "type": "string",
           "title": "Path Prefix",
           "default": "",
-          "description": "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access.",
+          "maxLength": 512,
+          "pattern": "^[^*?$\\x00-\\x1f\\x7f]*$",
+          "description": "Optional S3 key prefix to scope the IAM permissions (e.g., 'uploads/'). Empty means full bucket access. Cannot contain *, ? or $ (IAM wildcards and policy variables).",
           "editableOn": ["create", "update"],
           "order": 2
+        },
+        "credentials": {
+          "enum": ["access-key", "role"],
+          "type": "string",
+          "title": "Credentials",
+          "default": "access-key",
+          "editableOn": ["create"],
+          "description": "How the app authenticates to the bucket. access-key: a dedicated IAM user with a static access key (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). role: no static key and no credentials for the app; a dedicated IAM role for the S3 browser worker, which only the principals trusted by this service can assume. Cannot be changed after the link is created.",
+          "order": 3
+        },
+        "browser_enabled": {
+          "type": "boolean",
+          "title": "S3 browser",
+          "default": false,
+          "editableOn": ["create", "update"],
+          "description": "Let the people who can read this link browse the bucket from the dashboard, with this link's access level and path prefix. Off by default: turn it on only when everyone who can see the link may also see the files.",
+          "order": 4
         },
         "aws_access_key_id": {
           "type": "string",
@@ -39,8 +58,8 @@
           "export": {"type": "environment_variable"},
           "visibleOn": ["read"],
           "editableOn": [],
-          "description": "IAM user access key ID (auto-populated after link creation)",
-          "order": 3
+          "description": "IAM user access key ID (auto-populated after link creation; access-key links only)",
+          "order": 5
         },
         "aws_secret_access_key": {
           "type": "string",
@@ -48,8 +67,8 @@
           "export": {"type": "environment_variable", "secret": true},
           "visibleOn": ["read"],
           "editableOn": [],
-          "description": "IAM user secret access key (auto-populated, delivered as secret env var)",
-          "order": 4
+          "description": "IAM user secret access key (auto-populated, delivered as secret env var; access-key links only)",
+          "order": 6
         },
         "iam_user_name": {
           "type": "string",
@@ -57,6 +76,22 @@
           "visibleOn": [],
           "editableOn": [],
           "description": "Internal IAM user name created for this link"
+        },
+        "role_arn": {
+          "type": "string",
+          "title": "Role ARN",
+          "export": false,
+          "visibleOn": ["read"],
+          "editableOn": [],
+          "description": "IAM role the S3 browser worker assumes for this link (auto-populated; role links only). The application cannot assume it.",
+          "order": 7
+        },
+        "iam_role_name": {
+          "type": "string",
+          "export": false,
+          "visibleOn": [],
+          "editableOn": [],
+          "description": "Internal IAM role name created for this link"
         }
       }
     },

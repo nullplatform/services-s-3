@@ -14,15 +14,17 @@ WORKFLOW_PATH="$SERVICE_PATH/workflows/aws/$ACTION_TO_EXECUTE.yaml"
 OVERRIDES_WORKFLOW_PATH="$OVERRIDES_PATH/workflows/aws/$ACTION_TO_EXECUTE.yaml"
 VALUES_PATH="$SERVICE_PATH/values.yaml"
 
-CMD="np service workflow exec --workflow $WORKFLOW_PATH"
+# An array, not a string for eval: the path carries the action's slug, which comes from the
+# notification.
+CMD=(np service workflow exec --workflow "$WORKFLOW_PATH")
 
 if [[ -f "$VALUES_PATH" ]]; then
-  CMD="$CMD --values $VALUES_PATH"
+  CMD+=(--values "$VALUES_PATH")
 fi
 
 if [[ -f "$OVERRIDES_WORKFLOW_PATH" ]]; then
-  CMD="$CMD --overrides $OVERRIDES_WORKFLOW_PATH"
+  CMD+=(--overrides "$OVERRIDES_WORKFLOW_PATH")
 fi
 
-echo "Executing command: $CMD"
-eval "$CMD"
+echo "Executing command: ${CMD[*]}"
+"${CMD[@]}"
