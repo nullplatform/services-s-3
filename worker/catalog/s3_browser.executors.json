@@ -5,6 +5,11 @@
     "timeout_ms": 15000
   },
   {
+    "action": "search-objects",
+    "transport": "notification",
+    "timeout_ms": 15000
+  },
+  {
     "action": "head-object",
     "transport": "notification",
     "timeout_ms": 15000
@@ -16,6 +21,11 @@
   },
   {
     "action": "presign-download",
+    "transport": "notification",
+    "timeout_ms": 15000
+  },
+  {
+    "action": "presign-upload",
     "transport": "notification",
     "timeout_ms": 15000
   },

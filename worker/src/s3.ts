@@ -2,9 +2,10 @@
  * S3 with the credentials a target carries: the link's own IAM keys, or a session of the link's
  * IAM role. Never with the worker's own identity: a target has no way to ask for it. A fresh,
  * uncached client per request, so a client built with one link's credentials never serves another.
- * One folder level per listing.
+ * One folder level per listing; a search walks every level under its folder.
  */
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface Folder {
@@ -31,6 +32,24 @@ export interface Listing {
   truncated: boolean;
 }
 
+/**
+ * What one search call found under `prefix`, at any depth: the files and folders whose name contains
+ * `query`, whatever its case. A call stops at its time budget or at `limit` matches; `next_token` is
+ * where the next one resumes, null once the whole folder was looked at.
+ */
+export interface SearchResult {
+  bucket: string;
+  region: string | null;
+  prefix: string;
+  query: string;
+  folders: Folder[];
+  objects: S3Object[];
+  /** How many keys this call looked at. */
+  scanned: number;
+  next_token: string | null;
+  truncated: boolean;
+}
+
 export interface ObjectMeta {
   key: string;
   size: number;
@@ -44,6 +63,25 @@ export interface ObjectMeta {
 export interface Download {
   key: string;
   url: string;
+  expires_at: string;
+}
+
+/** One field of an upload form: S3 takes `name` literally (`X-Amz-Signature`, `Content-Type`). */
+export interface UploadField {
+  name: string;
+  value: string;
+}
+
+/** A presigned POST: the form the browser sends the file with, straight to S3. */
+export interface Upload {
+  key: string;
+  url: string;
+  /**
+   * The form fields to send before the file, as S3 signed them. A list, not a map: the catalog
+   * rewrites the keys of an action's output to snake_case (`X-Amz-Signature` would come back
+   * `x_amz_signature`), and a name carried as a value crosses it untouched.
+   */
+  fields: UploadField[];
   expires_at: string;
 }
 
@@ -77,8 +115,14 @@ export interface Target {
 
 export interface ObjectStore {
   list(target: Target, prefix: string, token?: string, limit?: number): Promise<Listing>;
+  /** The names containing `query` under `prefix`, resuming after the key `after`; ends at `limit` matches or its time budget. */
+  search(target: Target, prefix: string, query: string, after?: string, limit?: number): Promise<SearchResult>;
   head(target: Target, key: string): Promise<ObjectMeta>;
   presign(target: Target, key: string): Promise<Download>;
+  /** Whether an object with exactly this key exists; asked by listing, which every access level allows. */
+  exists(target: Target, key: string): Promise<boolean>;
+  /** A form that uploads one file of exactly `size` bytes to exactly `key`, and nothing else. */
+  presignUpload(target: Target, key: string, size: number, contentType?: string): Promise<Upload>;
   remove(target: Target, key: string): Promise<{ key: string }>;
   read(target: Target, key: string, maxBytes: number): Promise<ObjectText>;
 }
@@ -93,8 +137,14 @@ export class StoreError extends Error {
 interface Options {
   defaultRegion?: string;
   downloadTtlSeconds?: number;
+  uploadTtlSeconds?: number;
   clientFactory?: (config: S3ClientConfig & { credentials: NonNullable<S3ClientConfig["credentials"]> }) => S3Client;
   presign?: typeof getSignedUrl;
+  presignPost?: typeof createPresignedPost;
+  /** How long one search call keeps asking S3 for more keys before it answers with what it has. */
+  searchBudgetMs?: number;
+  /** Keys per S3 request while searching (S3's maximum is 1000). */
+  searchPageSize?: number;
   now?: () => number;
 }
 
@@ -129,7 +179,7 @@ export function totalFromContentRange(value: string | undefined): number | undef
   return match ? Number(match[1]) : undefined;
 }
 
-export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactory = defaultClientFactory, presign = getSignedUrl, now = Date.now }: Options = {}): ObjectStore {
+export function createS3({ defaultRegion, downloadTtlSeconds = 900, uploadTtlSeconds = 300, searchBudgetMs = 8000, searchPageSize = 1000, clientFactory = defaultClientFactory, presign = getSignedUrl, presignPost = createPresignedPost, now = Date.now }: Options = {}): ObjectStore {
   const client = (target: Target) => {
     const region = target.region || defaultRegion || "us-east-1";
     const { credentials } = target;
@@ -161,6 +211,43 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactor
           .map((entry) => ({ key: entry.Key!, name: nameOf(entry.Key!, prefix), size: entry.Size ?? 0, last_modified: entry.LastModified?.toISOString() ?? null, storage_class: entry.StorageClass, etag: entry.ETag }));
         return { bucket: target.bucket, region: target.region ?? defaultRegion ?? null, prefix, folders, objects, next_token: response.NextContinuationToken ?? null, truncated: Boolean(response.IsTruncated) };
       }),
+    search: (target, prefix, query, after, limit = 200) =>
+      wrap(target, async () => {
+        const needle = query.toLowerCase();
+        const matches = (name: string) => name.toLowerCase().includes(needle);
+        const s3 = client(target);
+        const started = now();
+        const folders: Folder[] = [];
+        const objects: S3Object[] = [];
+        const result = (next: string | null): SearchResult => ({ bucket: target.bucket, region: target.region ?? defaultRegion ?? null, prefix, query, folders, objects, scanned, next_token: next, truncated: next !== null });
+        let scanned = 0;
+        let last = after;
+        // S3 lists keys in order, so a folder's keys come together: a folder is new when the key before was not in it.
+        let open = after ? after.slice(prefix.length).split("/").slice(0, -1) : [];
+        for (;;) {
+          // Resumes by key, not by S3's token: the call can stop at any key, and the next one starts right after it.
+          const response = await s3.send(new ListObjectsV2Command({ Bucket: target.bucket, Prefix: prefix, MaxKeys: searchPageSize, StartAfter: last }));
+          for (const entry of response.Contents ?? []) {
+            const key = entry.Key;
+            if (!key) continue;
+            scanned += 1;
+            last = key;
+            const path = key.slice(prefix.length).split("/");
+            // Empty for the key that stands for a folder itself (`docs/`): it names no file.
+            const name = path.pop()!;
+            let shared = 0;
+            while (shared < path.length && shared < open.length && path[shared] === open[shared]) shared += 1;
+            for (let depth = shared; depth < path.length; depth += 1) {
+              if (matches(path[depth])) folders.push({ prefix: `${prefix}${path.slice(0, depth + 1).join("/")}/`, name: path[depth] });
+            }
+            open = path;
+            if (name && matches(name)) objects.push({ key, name, size: entry.Size ?? 0, last_modified: entry.LastModified?.toISOString() ?? null, storage_class: entry.StorageClass, etag: entry.ETag });
+            if (folders.length + objects.length >= limit) return result(key);
+          }
+          if (!response.IsTruncated || !last) return result(null);
+          if (now() - started >= searchBudgetMs) return result(last);
+        }
+      }),
     head: (target, key) =>
       wrap(target, async () => {
         const response = await client(target).send(new HeadObjectCommand({ Bucket: target.bucket, Key: key }));
@@ -174,6 +261,27 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, clientFactor
         const ttl = expiration ? Math.max(1, Math.min(downloadTtlSeconds, Math.floor((expiration.getTime() - now()) / 1000))) : downloadTtlSeconds;
         const url = await presign(client(target), new GetObjectCommand({ Bucket: target.bucket, Key: key, ResponseContentDisposition: `attachment; filename="${filename.replace(/"/g, "")}"` }), { expiresIn: ttl });
         return { key, url, expires_at: new Date(now() + ttl * 1000).toISOString() };
+      }),
+    exists: (target, key) =>
+      wrap(target, async () => {
+        // Keys sort byte-wise, so an object named exactly `key` is the first one under that prefix.
+        const response = await client(target).send(new ListObjectsV2Command({ Bucket: target.bucket, Prefix: key, MaxKeys: 1 }));
+        return response.Contents?.[0]?.Key === key;
+      }),
+    presignUpload: (target, key, size, contentType) =>
+      wrap(target, async () => {
+        // A role session's form stops working when the session ends: never promise longer.
+        const expiration = target.credentials?.expiration;
+        const ttl = expiration ? Math.max(1, Math.min(uploadTtlSeconds, Math.floor((expiration.getTime() - now()) / 1000))) : uploadTtlSeconds;
+        // The policy pins the bucket and the key (the SDK adds both) and the size: the form uploads that one file.
+        const { url, fields } = await presignPost(client(target), {
+          Bucket: target.bucket,
+          Key: key,
+          Conditions: [["content-length-range", size, size]],
+          ...(contentType ? { Fields: { "Content-Type": contentType } } : {}),
+          Expires: ttl,
+        });
+        return { key, url, fields: Object.entries(fields).map(([name, value]) => ({ name, value })), expires_at: new Date(now() + ttl * 1000).toISOString() };
       }),
     remove: (target, key) =>
       wrap(target, async () => {

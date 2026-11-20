@@ -9,9 +9,18 @@ import type { ObjectStore } from "../src/s3";
 
 // The catalog's action routes run @nullplatform/server's request transform: snake_case keys arrive
 // camelCased BEFORE the input schema is validated (catalog-entities-api src/routes/action.ts), so the
-// spec declares inputs in camelCase while the plugin and the worker keep speaking snake_case. Outputs
-// come back from the executor untransformed and stay snake_case.
+// spec declares inputs in camelCase while the plugin and the worker keep speaking snake_case. The
+// answer runs the response transform (`transform: { enabled: true }` on the same routes): every key
+// of an output comes back in snake_case, so `X-Amz-Signature` as a key reaches the caller as
+// `x_amz_signature`. An output therefore carries no data in its keys.
 const camel = (key: string) => key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+const snake = (key: string) => key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase();
+const catalogReturns = (output: unknown): unknown =>
+  Array.isArray(output)
+    ? output.map(catalogReturns)
+    : output && typeof output === "object"
+      ? Object.fromEntries(Object.entries(output as Record<string, unknown>).map(([key, value]) => [snake(key), catalogReturns(value)]))
+      : output;
 const catalogSees = (input: unknown): unknown =>
   input && typeof input === "object" && !Array.isArray(input)
     ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, value]) => [camel(key), value]))
@@ -57,11 +66,20 @@ const store: ObjectStore = {
   async list(t, prefix) {
     return { bucket: t.bucket, region: t.region ?? null, prefix, folders: [{ prefix: `${prefix}x/`, name: "x" }], objects: [{ key: `${prefix}a`, name: "a", size: 1, last_modified: "2026-01-01T00:00:00.000Z", storage_class: "STANDARD", etag: '"e"' }], next_token: "next", truncated: true };
   },
+  async search(t, prefix, query) {
+    return { bucket: t.bucket, region: t.region ?? null, prefix, query, folders: [{ prefix: `${prefix}Reports/`, name: "Reports" }], objects: [{ key: `${prefix}x/report.csv`, name: "report.csv", size: 1, last_modified: "2026-01-01T00:00:00.000Z", storage_class: "STANDARD", etag: '"e"' }], scanned: 1000, next_token: `${prefix}x/report.csv`, truncated: true };
+  },
   async head(_t, key) {
     return { key, size: 1, content_type: "text/plain", last_modified: null, etag: '"e"', storage_class: "STANDARD", metadata: { a: "b" } };
   },
   async presign(_t, key) {
     return { key, url: "https://example.invalid/x", expires_at: "2026-01-01T00:00:00.000Z" };
+  },
+  async exists() {
+    return false;
+  },
+  async presignUpload(_t, key) {
+    return { key, url: "https://example.invalid/", fields: [{ name: "key", value: key }, { name: "Policy", value: "p" }, { name: "X-Amz-Signature", value: "s" }], expires_at: "2026-01-01T00:00:00.000Z" };
   },
   async remove(_t, key) {
     return { key };
@@ -74,16 +92,20 @@ const handler = createHandler({ platform, store, config: { specifications: ["aws
 
 const inputs: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1", prefix: "docs/", limit: 50, token: "t" },
+  "search-objects": { link_id: "lnk-1", prefix: "docs/", query: "Report", limit: 50, token: "docs/2026/a.csv" },
   "head-object": { link_id: "lnk-1", key: "docs/a.txt" },
   "read-object": { link_id: "lnk-1", key: "docs/a.txt", max_bytes: 1024 },
   "presign-download": { link_id: "lnk-1", key: "docs/a.txt" },
+  "presign-upload": { link_id: "lnk-1", key: "docs/a.txt", size: 1024, content_type: "text/plain" },
   "delete-object": { link_id: "lnk-1", key: "docs/a.txt" },
 };
 const minimal: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1" },
+  "search-objects": { link_id: "lnk-1", query: "a" },
   "head-object": { link_id: "lnk-1", key: "a" },
   "read-object": { link_id: "lnk-1", key: "a" },
   "presign-download": { link_id: "lnk-1", key: "a" },
+  "presign-upload": { link_id: "lnk-1", key: "a", size: 0 },
   "delete-object": { link_id: "lnk-1", key: "a" },
 };
 let sequence = 0;
@@ -149,6 +171,8 @@ describe("s3_browser catalog specification", () => {
         const output = JSON.parse(result.data.stdout);
         expect(output.error).toBeUndefined();
         expect(validateOutput(output)).toBe(true);
+        // What the caller reads is what the worker wrote: nothing in it changes with its keys.
+        expect(catalogReturns(output)).toEqual(output);
       }
     });
 
@@ -161,9 +185,24 @@ describe("s3_browser catalog specification", () => {
         { ...inputs[slug], link_id: "a".repeat(65) },
         { ...inputs[slug], link_id: 7 },
       ];
-      if (slug !== "list-objects") refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", key: "/abs" }, { link_id: "lnk-1", key: "dir/" });
-      else refused.push({ link_id: "lnk-1", prefix: "/abs" }, { link_id: "lnk-1", limit: 0 }, { link_id: "lnk-1", limit: 1001 });
+      const folder = slug === "list-objects" || slug === "search-objects";
+      if (!folder) refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", key: "/abs" }, { link_id: "lnk-1", key: "dir/" });
+      else refused.push({ ...minimal[slug], prefix: "/abs" }, { ...minimal[slug], limit: 0 }, { ...minimal[slug], limit: 1001 });
+      if (slug === "search-objects") {
+        refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", query: "" }, { link_id: "lnk-1", query: "   " }, { link_id: "lnk-1", query: 7 }, { link_id: "lnk-1", query: "x".repeat(129) }, { link_id: "lnk-1", query: "a", key: "a" });
+      }
       if (slug === "read-object") refused.push({ link_id: "lnk-1", key: "a", max_bytes: 0 }, { link_id: "lnk-1", key: "a", max_bytes: 262145 });
+      if (slug === "presign-upload") {
+        refused.push(
+          { link_id: "lnk-1", key: "a" },
+          { link_id: "lnk-1", key: "a", size: -1 },
+          { link_id: "lnk-1", key: "a", size: 1.5 },
+          { link_id: "lnk-1", key: "a", size: "10" },
+          { link_id: "lnk-1", key: "a", size: 1, content_type: "not a type" },
+          { link_id: "lnk-1", key: "a", size: 1, content_type: "text/plain; charset=utf-8" },
+          { link_id: "lnk-1", key: "docs/${filename}", size: 1 },
+        );
+      }
       for (const input of refused) {
         const clean = JSON.parse(JSON.stringify(input));
         expect([slug, clean, validate(catalogSees(clean))]).toEqual([slug, clean, false]);
@@ -172,10 +211,13 @@ describe("s3_browser catalog specification", () => {
     });
   }
 
-  test("everyone gets read, list and the four reads; nobody gets the delete", () => {
+  test("everyone gets read, list and every action: who may read or change a link is the worker's check", () => {
     const grants: Array<{ principals: Array<{ type: string }>; actions: string[] }> = specification.schema.authorization.entities.grants;
-    expect(grants).toEqual([{ principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:head-object", "action:read-object", "action:presign-download"] }]);
-    expect(JSON.stringify(grants)).not.toContain("action:delete-object");
+    expect(grants).toEqual([
+      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:read-object", "action:presign-download", "action:presign-upload", "action:delete-object"] },
+    ]);
+    // Nobody creates or deletes the entity from the block.
+    for (const verb of ["create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);
   });
 
   test("one notification executor per action, 15 s budget", () => {

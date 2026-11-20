@@ -81,13 +81,15 @@ The document is `{"notification": <catalog context>}`; the route takes it when `
 
 Actions (all `sync`, every input has `link_id`, nothing else allowed; the specification declares the inputs in camelCase
 because the catalog camelCases the request body before validating it, and the execution record comes back snake_case):
-`list-objects` (`prefix?`, `token?`, `limit?`), `head-object` (`key`), `read-object` (`key`,
+`list-objects` (`prefix?`, `token?`, `limit?`), `search-objects` (`prefix?`, `query`, `token?`, `limit?`: the files
+and folders under the prefix, at any depth, whose name contains the query), `head-object` (`key`), `read-object` (`key`,
 `max_bytes?` 1–262144, default 262144: the first bytes as UTF-8 with `truncated` and the total
-`size`), `presign-download` (`key`), `delete-object` (`key`). Outputs in [`catalog/LINK_MODE.md`](catalog/LINK_MODE.md).
+`size`), `presign-download` (`key`), `presign-upload` (`key`, `size` in bytes, `content_type?`: a form that uploads one
+file of exactly that size to exactly that key), `delete-object` (`key`). Outputs in [`catalog/LINK_MODE.md`](catalog/LINK_MODE.md).
 
 Checks, in order (all mandatory):
 
-1. `delete-object` needs `S3_BROWSER_ALLOW_WRITES=1` (`WRITES_DISABLED`, before any lookup).
+1. `delete-object` and `presign-upload` need `S3_BROWSER_ALLOW_WRITES=1` (`WRITES_DISABLED`, before any lookup).
 2. The execution is verified with the agent's key, without cache: `GET /catalog/actions/s3_browser/executions/{id}`
    must be `pending` and of the same action; its `input` gives every field (`link_id` included), its `entity_nrn`
    must be exactly an application NRN and its `actor_id` (with `actor_type` `user`) is the user who ran it; an
@@ -96,7 +98,7 @@ Checks, in order (all mandatory):
 4. The link's `entity_nrn` is the entity's NRN or under it (`:` boundary), e.g. a scope of the app (`LINK_NOT_OWNED`).
 5. The user who ran the execution holds the link's own services permission, asked to authz at the link's `entity_nrn`
    (`GET /authz?nrn=&action=&user_id=`, never cached): `service:link:read` for the four reads, `service:link:write` for
-   `delete-object` (`LINK_ACCESS_DENIED`). A check that cannot be made opens nothing (`PERMISSION_CHECK_FAILED`).
+   `delete-object` and `presign-upload` (`LINK_ACCESS_DENIED`). A check that cannot be made opens nothing (`PERMISSION_CHECK_FAILED`).
 6. The link is `active` (`LINK_NOT_READY`) and its `browser_enabled` attribute is `true`; off, absent or anything else
    refuses (`LINK_BROWSER_DISABLED`). Then, by the link's `credentials` attribute:
    - `access-key` or absent: `GET /link/{link_id}?include_secret_attributes=true` (never cached), checks 4 and 6 again,
@@ -107,7 +109,9 @@ Checks, in order (all mandatory):
      (`LINK_ROLE_MISMATCH`), never assumed.
 7. Bucket and region come only from the link's service, which must be an accepted specification (`NOT_A_BUCKET`, `NO_BUCKET`).
 8. Every prefix and key stays under the link's `path_prefix` (an empty list prefix lists at it) (`OUTSIDE_PREFIX`).
-9. `delete-object` needs `access_level` `write` or `read-write` (`WRITE_NOT_ALLOWED`).
+9. `delete-object` and `presign-upload` need `access_level` `write` or `read-write` (`WRITE_NOT_ALLOWED`). An upload is
+   for a file of at most `S3_BROWSER_UPLOAD_MAX_BYTES` (`UPLOAD_TOO_LARGE`, refused before the link is read) and for a key
+   that holds no object yet (`OBJECT_EXISTS`): it never replaces a file.
 10. Role links only, after every check above: STS `AssumeRole` on the rebuilt ARN with the worker's own identity, session
     `s3-browser-<execution id>`, 900 s, in the bucket's region (`LINK_ROLE_DENIED` when STS refuses).
 
@@ -125,8 +129,10 @@ Checks, in order (all mandatory):
 | `LINK_ROLE_DENIED` | 403 | STS refused the `AssumeRole` (the worker's role is not trusted by the link's role, or the role does not exist); STS's own message goes to the worker's log only |
 | `NOT_A_BUCKET` / `NO_BUCKET` | 400 / 409 | the link's service is not an S3 bucket / has no bucket yet |
 | `OUTSIDE_PREFIX` | 403 | prefix or key outside `path_prefix` |
-| `WRITE_NOT_ALLOWED` | 403 | delete on a `read` link |
-| `WRITES_DISABLED` | 405 | delete without `S3_BROWSER_ALLOW_WRITES=1` |
+| `WRITE_NOT_ALLOWED` | 403 | delete or upload on a `read` link |
+| `WRITES_DISABLED` | 405 | delete or upload without `S3_BROWSER_ALLOW_WRITES=1` |
+| `UPLOAD_TOO_LARGE` | 413 | an upload larger than `S3_BROWSER_UPLOAD_MAX_BYTES` |
+| `OBJECT_EXISTS` | 409 | an upload to a key that already holds an object |
 | S3 / STS error names (`AccessDenied`, `NoSuchKey`, `CredentialsProviderError`, …) | 403/404/500/502 | from AWS |
 | `PLATFORM`, `PERMISSION_CHECK_FAILED`, `NO_CREDENTIALS`, `WORKER` | ≥500 | failed execution (e.g. the link's secret came back masked, or authz did not answer the permission check) |
 
@@ -138,12 +144,12 @@ never leaves the worker. A role link's presigned URL (and its `expires_at`) is c
 keys or session; nothing built with them is cached or shared, and there is no S3 client with the worker's identity.
 
 Files in [`catalog/`](catalog/): [`s3_browser.specification.json`](catalog/s3_browser.specification.json)
-(entity `application_id` + `nrn`, the five actions, reads granted to everyone, delete to nobody),
-[`s3_browser.executors.json`](catalog/s3_browser.executors.json) (five `notification` executors,
+(entity `application_id` + `nrn`, the seven actions, all granted to everyone),
+[`s3_browser.executors.json`](catalog/s3_browser.executors.json) (seven `notification` executors,
 15 s), [`s3_browser.channel.example.json`](catalog/s3_browser.channel.example.json) (agent channel).
-To grant the delete, add e.g. `{ "principals": [{ "type": "role", "id": 9 }], "actions": ["action:delete-object"] }`.
-The catalog's gate (`entity:write` on the application) and these grants decide who may run an action at all; on top of
-them the worker asks for the link's own permission (check 5) and for the link's `browser_enabled` (check 6).
+The catalog's gate (`entity:write` on the application) and these grants decide who may run an action at all. Who may
+read or change one link is the worker's: the link's own permission (check 5: `service:link:write` to delete or upload),
+its `browser_enabled` (check 6), its `access_level` (check 9), and `S3_BROWSER_ALLOW_WRITES` on the worker.
 
 ### Interim demo flag: `S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1` (off by default)
 
@@ -163,7 +169,7 @@ NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":
 NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs
 ```
 
-It creates or updates the specification (`--allow-destructive` when an update narrows it), the five executors and the
+It creates or updates the specification (`--allow-destructive` when an update narrows it), the seven executors and the
 agent channel (`--skip-channel`), and seeds one `s3_browser` entity per application with a link to an `aws-s3-bucket*`
 service (`--skip-seed`; 409 = already there). The channel runs `package-exec` of the `aws-s3-bucket` package (this
 image) on the agents `AGENT_SELECTOR` names: the same `tags_selectors` as the service's own channel, and the package must
@@ -193,8 +199,11 @@ against a real API.
 | `AWS_REGION` | default region when the link's service has none |
 | `S3_BROWSER_ALLOW_IMDS` | `1` lets STS's source credential chain query EC2 instance metadata (off by default: a container without a route to it hangs); never changes bash's environment |
 | `S3_BROWSER_SPECIFICATIONS` | service specifications a link's service may be, comma list, trailing `*` = prefix; default `aws-s3-bucket*` |
-| `S3_BROWSER_ALLOW_WRITES` | `1` enables `delete-object` |
+| `S3_BROWSER_ALLOW_WRITES` | `1` enables `delete-object` and `presign-upload` |
 | `S3_BROWSER_DOWNLOAD_TTL_SECONDS` | presigned URL lifetime, default 900 (a role link's is capped at its session) |
+| `S3_BROWSER_UPLOAD_TTL_SECONDS` | upload form lifetime, default 300 (a role link's is capped at its session) |
+| `S3_BROWSER_UPLOAD_MAX_BYTES` | largest file an upload form is signed for, default 104857600 (100 MiB) |
+| `S3_BROWSER_SEARCH_BUDGET_MS` | how long one `search-objects` call keeps asking S3 for more keys before it answers with what it found, default 8000 (the executor waits 15 s) |
 | `S3_BROWSER_LINK_SPECIFICATION` | catalog specification slug that selects link mode, default `s3_browser` |
 | `S3_BROWSER_LINK_SECRETS_QUERY` | query string for `GET /link/{id}` that includes secret attributes, default `include_secret_attributes=true` |
 | `S3_BROWSER_UNVERIFIED_ENTITY_BINDING` | `1` = demo-only fallback when the execution record has no `entity_nrn`; never in a customer organization |

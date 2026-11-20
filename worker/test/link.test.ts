@@ -4,7 +4,7 @@ import { type Handler, createHandler, createReplayGuard, linkOwnedBy, normaliseP
 import { type CatalogEntity, type CatalogExecution, createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
 import { CommandError, type ParseOptions, isLinkPayload, parseCommand as parsePayload, parseLinkOperation } from "../src/protocol";
 import { type AssumeRole, type AssumeRoleRequest, linkRoleArn, linkRoleName, roleSessionName } from "../src/role";
-import { createS3, defaultClientFactory, type ObjectStore, type Target, totalFromContentRange } from "../src/s3";
+import { createS3, defaultClientFactory, type ObjectStore, type StoreError, type Target, totalFromContentRange } from "../src/s3";
 
 // Distinctive values: any appearance of these in an output is a leak.
 const KEY_ID = "AKIALINKKEYID0000001";
@@ -96,12 +96,24 @@ function fakePlatform(links: Record<string, Link>, grants: Grants = () => true) 
   return { platform, seen, asked };
 }
 
-function recordingStore() {
+function recordingStore(existing: string[] = []) {
   const calls: Array<{ op: string; target: Target; arg?: unknown }> = [];
   const store: ObjectStore = {
+    async exists(target, key) {
+      calls.push({ op: "exists", target, arg: key });
+      return existing.includes(key);
+    },
+    async presignUpload(target, key, size, contentType) {
+      calls.push({ op: "presignUpload", target, arg: [key, size, contentType] });
+      return { key, url: "https://link-bucket.s3.example.invalid/", fields: [{ name: "key", value: key }, { name: "Policy", value: "signed-policy" }], expires_at: "2026-01-01T00:05:00.000Z" };
+    },
     async list(target, prefix, _token, _limit) {
       calls.push({ op: "list", target, arg: prefix });
       return { bucket: target.bucket, region: target.region ?? null, prefix, folders: [], objects: [{ key: `${prefix}a.txt`, name: "a.txt", size: 1, last_modified: null }], next_token: null, truncated: false };
+    },
+    async search(target, prefix, query, after, limit) {
+      calls.push({ op: "search", target, arg: [prefix, query, after, limit] });
+      return { bucket: target.bucket, region: target.region ?? null, prefix, query, folders: [], objects: [{ key: `${prefix}deep/match.txt`, name: "match.txt", size: 1, last_modified: null }], scanned: 3, next_token: null, truncated: false };
     },
     async head(target, key) {
       calls.push({ op: "head", target, arg: key });
@@ -153,9 +165,13 @@ const delivered = (document: string) => JSON.parse(document).notification as Rec
 const runCommand = (document: string, handler: Handler, options?: ParseOptions) => runPayload(delivered(document), handler, options);
 const parseCommand = (document: string, options?: ParseOptions) => parsePayload(delivered(document), options);
 
-function setup(links: Record<string, Link> = { "lnk-1": baseLink() }, allowWrites = false, { grants, ...extra }: { unverifiedEntityBinding?: boolean; grants?: Grants } = {}) {
+function setup(
+  links: Record<string, Link> = { "lnk-1": baseLink() },
+  allowWrites = false,
+  { grants, existing, ...extra }: { unverifiedEntityBinding?: boolean; uploadMaxBytes?: number; grants?: Grants; existing?: string[] } = {},
+) {
   const { platform, seen, asked } = fakePlatform(links, grants);
-  const { store, calls } = recordingStore();
+  const { store, calls } = recordingStore(existing);
   const warnings: string[] = [];
   const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites, ...extra, warn: (message) => warnings.push(message) } });
   return { handler, seen, asked, calls, warnings };
@@ -174,6 +190,28 @@ describe("link mode: protocol", () => {
     expect(isLinkPayload(delivered(payload), { linkSpecification: "other_browser" })).toBe(false);
     expect(() => parseCommand(payload, { linkSpecification: "other_browser" })).toThrow(/not a link-mode payload/);
     expect(parseCommand(payload, { linkSpecification: "s3_browser" }).link).toBeDefined();
+  });
+
+  test("presign-upload takes a key, the file's size and an optional media type", () => {
+    expect(parseLinkOperation("presign-upload", { link_id: "lnk-1", key: "docs/a.csv", size: 12, content_type: "text/csv" })).toMatchObject({ action: "presign-upload", key: "docs/a.csv", size: 12, content_type: "text/csv" });
+    expect(parseLinkOperation("presign-upload", { link_id: "lnk-1", key: "a", size: 0, content_type: "" }).content_type).toBeUndefined();
+    for (const input of [{ key: "a" }, { key: "a", size: -1 }, { key: "a", size: 1.5 }, { key: "a", size: "1" }, { key: "a", size: 1, content_type: "text" }, { key: "a", size: 1, content_type: "text/plain; charset=utf-8" }, { key: "a", size: 1, bucket: "b" }]) {
+      expect(() => parseLinkOperation("presign-upload", { link_id: "lnk-1", ...input })).toThrow(CommandError);
+    }
+    // S3 would replace ${filename} with the name of the file sent: the key signed would not be the key written.
+    expect(() => parseLinkOperation("presign-upload", { link_id: "lnk-1", key: "docs/${filename}", size: 1 })).toThrow(/filename/);
+  });
+
+  test("search-objects takes a folder, the text to look for and where to go on", () => {
+    expect(parseLinkOperation("search-objects", { link_id: "lnk-1", prefix: "docs/", query: "Report" })).toMatchObject({ action: "search-objects", prefix: "docs/", query: "Report", limit: 200, link: { link_id: "lnk-1" } });
+    expect(parseLinkOperation("search-objects", { link_id: "lnk-1", prefix: "docs/", query: "a", token: "docs/2026/a.csv", limit: 50 })).toMatchObject({ token: "docs/2026/a.csv", limit: 50 });
+    for (const input of [{}, { query: "" }, { query: "   " }, { query: 7 }, { query: "x".repeat(129) }]) {
+      expect(() => parseLinkOperation("search-objects", { link_id: "lnk-1", ...input })).toThrow(/query is required/);
+    }
+    // Where to go on is a key of the folder searched.
+    expect(() => parseLinkOperation("search-objects", { link_id: "lnk-1", prefix: "docs/", query: "a", token: "other/a.csv" })).toThrow(/token/);
+    expect(() => parseLinkOperation("search-objects", { link_id: "lnk-1", query: "a", key: "a" })).toThrow(/unexpected input/);
+    expect(() => parseLinkOperation("list-objects", { link_id: "lnk-1", query: "a" })).toThrow(/unexpected input/);
   });
 
   test("the envelope needs an execution id and a known operation", () => {
@@ -286,12 +324,12 @@ describe("link mode: handler", () => {
   test("the user who ran the execution needs the link's read permission, asked at the link's own NRN", async () => {
     const scopeNrn = `${APP_NRN}:scope=9`;
     const { handler, asked } = setup({ "lnk-1": baseLink(), "lnk-2": baseLink({ id: "lnk-2", entity_nrn: scopeNrn }) });
-    for (const [slug, input] of [["list-objects", {}], ["head-object", { key: "a.txt" }], ["read-object", { key: "a.txt" }], ["presign-download", { key: "a.txt" }]] as const) {
+    for (const [slug, input] of [["list-objects", {}], ["search-objects", { query: "a" }], ["head-object", { key: "a.txt" }], ["read-object", { key: "a.txt" }], ["presign-download", { key: "a.txt" }]] as const) {
       expect(parse(await runCommand(linkEnvelope(slug, { link_id: "lnk-1", ...input }), handler)).error).toBeUndefined();
     }
     await runCommand(linkEnvelope("list-objects", { link_id: "lnk-2" }), handler);
     // Once per execution, for the user the catalog recorded, not the one the envelope names.
-    expect(asked).toEqual([...Array(4).fill(`u-1 service:link:read ${APP_NRN}`), `u-1 service:link:read ${scopeNrn}`]);
+    expect(asked).toEqual([...Array(5).fill(`u-1 service:link:read ${APP_NRN}`), `u-1 service:link:read ${scopeNrn}`]);
     const other = setup();
     await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }, { user: { id: "u-forged" } }, { actor_id: "u-7" }), other.handler);
     expect(other.asked).toEqual([`u-7 service:link:read ${APP_NRN}`]);
@@ -321,6 +359,55 @@ describe("link mode: handler", () => {
     expect(reader.calls).toHaveLength(0);
     const writer = setup(undefined, true, { grants: (_user, action) => action === "service:link:write" });
     expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), writer.handler))).toEqual({ key: "a.txt" });
+  });
+
+  test("presign-upload: a form for one file of one size at one key, with the link's keys", async () => {
+    const { handler, calls, asked } = setup({ "lnk-1": baseLink({ attributes: { path_prefix: "uploads" } }) }, true);
+    const result = await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "uploads/report.csv", size: 2048, content_type: "text/csv" }), handler);
+    expect(parse(result)).toEqual({ key: "uploads/report.csv", url: "https://link-bucket.s3.example.invalid/", fields: [{ name: "key", value: "uploads/report.csv" }, { name: "Policy", value: "signed-policy" }], expires_at: "2026-01-01T00:05:00.000Z" });
+    // An upload changes the link's bucket: the permission that changes the link, and the key checked free first.
+    expect(asked).toEqual([`u-1 service:link:write ${APP_NRN}`]);
+    expect(calls.map((call) => [call.op, call.arg])).toEqual([
+      ["exists", "uploads/report.csv"],
+      ["presignUpload", ["uploads/report.csv", 2048, "text/csv"]],
+    ]);
+    expect(calls[1].target).toEqual({ bucket: "link-bucket", region: "sa-east-1", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } });
+    // The content type is optional; a zero-byte file is a file.
+    expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "uploads/empty", size: 0 }), handler)).error).toBeUndefined();
+    expect(calls.at(-1)).toMatchObject({ op: "presignUpload", arg: ["uploads/empty", 0, undefined] });
+  });
+
+  test("presign-upload is refused like a delete: writes off, a read link, outside the prefix, without the permission", async () => {
+    const upload = (handler: Handler, input: Record<string, unknown> = {}) => runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 1, ...input }), handler);
+    const off = setup();
+    expect(parse(await upload(off.handler)).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
+    expect(off.seen).toEqual([]);
+    const readOnly = setup({ "lnk-1": baseLink({ attributes: { access_level: "read" } }) }, true);
+    expect(parse(await upload(readOnly.handler)).error).toMatchObject({ status: 403, code: "WRITE_NOT_ALLOWED" });
+    const prefixed = setup({ "lnk-1": baseLink({ attributes: { path_prefix: "uploads/" } }) }, true);
+    expect(parse(await upload(prefixed.handler, { key: "other/a.txt" })).error).toMatchObject({ status: 403, code: "OUTSIDE_PREFIX" });
+    const reader = setup(undefined, true, { grants: (_user, action) => action === "service:link:read" });
+    expect(parse(await upload(reader.handler)).error).toMatchObject({ status: 403, code: "LINK_ACCESS_DENIED" });
+    for (const refused of [off, readOnly, prefixed, reader]) expect(refused.calls).toHaveLength(0);
+    // A write-only link uploads: it needs no read.
+    const writeOnly = setup({ "lnk-1": baseLink({ attributes: { access_level: "write" } }) }, true);
+    expect(parse(await upload(writeOnly.handler)).error).toBeUndefined();
+  });
+
+  test("presign-upload: UPLOAD_TOO_LARGE before the link is read; OBJECT_EXISTS instead of replacing a file", async () => {
+    const small = setup(undefined, true, { uploadMaxBytes: 10 });
+    const tooLarge = await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 11 }), small.handler);
+    expect(parse(tooLarge).error).toMatchObject({ status: 413, code: "UPLOAD_TOO_LARGE" });
+    expect(small.seen).toEqual([]);
+    expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 10 }), small.handler)).error).toBeUndefined();
+    // The default ceiling is 100 MiB.
+    const byDefault = setup(undefined, true);
+    expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 104_857_600 }), byDefault.handler)).error).toBeUndefined();
+    expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "b.txt", size: 104_857_601 }), byDefault.handler)).error.code).toBe("UPLOAD_TOO_LARGE");
+    const taken = setup(undefined, true, { existing: ["docs/a.txt"] });
+    const exists = await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "docs/a.txt", size: 1 }), taken.handler);
+    expect(parse(exists).error).toMatchObject({ status: 409, code: "OBJECT_EXISTS" });
+    expect(taken.calls.map((call) => call.op)).toEqual(["exists"]);
   });
 
   test("a permission check that cannot be made is a worker failure, and opens nothing", async () => {
@@ -369,12 +456,17 @@ describe("link mode: handler", () => {
     expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler)).prefix).toBe("uploads/");
     expect(calls.at(-1)?.arg).toBe("uploads/");
     expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "uploads/2026/" }), handler)).prefix).toBe("uploads/2026/");
+    // A search with no folder searches the link's own, and never above it.
+    expect(parse(await runCommand(linkEnvelope("search-objects", { link_id: "lnk-1", query: "a" }), handler)).prefix).toBe("uploads/");
+    expect(calls.at(-1)).toMatchObject({ op: "search", arg: ["uploads/", "a", undefined, 200] });
     expect(parse(await runCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "uploads/a.txt" }), handler))).toMatchObject({ key: "uploads/a.txt" });
     const before = calls.length;
     for (const [slug, input] of [
       ["list-objects", { prefix: "upload" }],
       ["list-objects", { prefix: "uploads" }],
       ["list-objects", { prefix: "other/" }],
+      ["search-objects", { prefix: "other/", query: "a" }],
+      ["search-objects", { prefix: "upload", query: "a" }],
       ["head-object", { key: "other/a.txt" }],
       ["read-object", { key: "uploadsX/a.txt" }],
       ["presign-download", { key: "a.txt" }],
@@ -417,6 +509,13 @@ describe("link mode: handler", () => {
     const { handler, seen } = setup({ "lnk-1": baseLink({ attributes: { access_level: "read" }, entity_nrn: "organization=9" }) }, false);
     expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), handler)).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
     expect(seen).toEqual([]);
+  });
+
+  test("search-objects searches the folder with the link's keys, from where the last call stopped", async () => {
+    const { handler, calls } = setup();
+    const found = parse(await runCommand(linkEnvelope("search-objects", { link_id: "lnk-1", prefix: "docs/", query: "Match", token: "docs/a/b.txt", limit: 20 }), handler));
+    expect(found).toMatchObject({ prefix: "docs/", query: "Match", objects: [{ key: "docs/deep/match.txt", name: "match.txt" }], scanned: 3, next_token: null, truncated: false });
+    expect(calls.at(-1)).toMatchObject({ op: "search", target: { bucket: "link-bucket" }, arg: ["docs/", "Match", "docs/a/b.txt", 20] });
   });
 
   test("read-object passes max_bytes to the store", async () => {
@@ -756,6 +855,123 @@ describe("link mode: S3 store", () => {
   });
 });
 
+describe("link mode: S3 store, uploads", () => {
+  test("exists asks for the key as a prefix and answers only for the exact key", async () => {
+    const answers = [{ Contents: [{ Key: "docs/a.txt" }] }, { Contents: [{ Key: "docs/a.txt.bak" }] }, {}];
+    const { factory, sent } = fakeClients(() => answers.shift());
+    const s3 = createS3({ clientFactory: factory });
+    const target = { bucket: "b", credentials: KEYS };
+    expect([await s3.exists(target, "docs/a.txt"), await s3.exists(target, "docs/a.txt"), await s3.exists(target, "docs/a.txt")]).toEqual([true, false, false]);
+    expect(sent[0]).toBeInstanceOf(ListObjectsV2Command);
+    expect((sent[0] as ListObjectsV2Command).input).toEqual({ Bucket: "b", Prefix: "docs/a.txt", MaxKeys: 1 });
+  });
+
+  test("presignUpload signs a form for that key and that size, valid five minutes", async () => {
+    const asked: unknown[] = [];
+    const presignPost = (async (_client: unknown, options: unknown) => (asked.push(options), { url: "https://b.s3.amazonaws.com/", fields: { key: "docs/a.csv", Policy: "p" } })) as never;
+    const s3 = createS3({ clientFactory: fakeClients().factory, presignPost, now: () => Date.parse("2026-01-01T00:00:00.000Z") });
+    expect(await s3.presignUpload({ bucket: "b", credentials: KEYS }, "docs/a.csv", 2048, "text/csv")).toEqual({ key: "docs/a.csv", url: "https://b.s3.amazonaws.com/", fields: [{ name: "key", value: "docs/a.csv" }, { name: "Policy", value: "p" }], expires_at: "2026-01-01T00:05:00.000Z" });
+    expect(asked[0]).toEqual({ Bucket: "b", Key: "docs/a.csv", Conditions: [["content-length-range", 2048, 2048]], Fields: { "Content-Type": "text/csv" }, Expires: 300 });
+    await s3.presignUpload({ bucket: "b", credentials: KEYS }, "docs/b", 0);
+    expect(asked[1]).toEqual({ Bucket: "b", Key: "docs/b", Conditions: [["content-length-range", 0, 0]], Expires: 300 });
+  });
+
+  test("a role link's upload form never outlives its session", async () => {
+    let requested = 0;
+    const presignPost = (async (_client: unknown, options: { Expires?: number }) => ((requested = options.Expires ?? 0), { url: "https://b.s3.amazonaws.com/", fields: {} })) as never;
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    const s3 = createS3({ clientFactory: fakeClients().factory, presignPost, uploadTtlSeconds: 600, now: () => now });
+    const upload = await s3.presignUpload({ bucket: "b", credentials: { ...SESSION, expiration: new Date(now + 120_000) } }, "a", 1);
+    expect(requested).toBe(120);
+    expect(upload.expires_at).toBe("2026-01-01T00:02:00.000Z");
+    await s3.presignUpload({ bucket: "b", credentials: KEYS }, "a", 1);
+    expect(requested).toBe(600);
+  });
+
+  test("the real signer pins the bucket, the key and the size in the policy", async () => {
+    const s3 = createS3({ now: () => Date.now() });
+    const upload = await s3.presignUpload({ bucket: "link-bucket", region: "us-east-1", credentials: KEYS }, "docs/a.csv", 2048, "text/csv");
+    expect(upload.url).toBe("https://link-bucket.s3.us-east-1.amazonaws.com/");
+    const fields = Object.fromEntries(upload.fields.map((field) => [field.name, field.value]));
+    expect(fields).toMatchObject({ key: "docs/a.csv", bucket: "link-bucket", "Content-Type": "text/csv" });
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining(["Policy", "X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Signature"]));
+    const policy = JSON.parse(Buffer.from(fields.Policy, "base64").toString("utf8")) as { conditions: unknown[] };
+    expect(policy.conditions).toEqual(expect.arrayContaining([["content-length-range", 2048, 2048], { bucket: "link-bucket" }, { key: "docs/a.csv" }, { "Content-Type": "text/csv" }]));
+    // Nothing in the form is the secret; the key id is, as in a presigned URL.
+    expect(JSON.stringify(upload)).not.toContain(SECRET);
+  });
+});
+
+describe("link mode: S3 store, search", () => {
+  const TARGET = { bucket: "b", credentials: KEYS };
+  const entries = (keys: string[]) => keys.map((Key) => ({ Key, Size: 1, LastModified: new Date("2026-01-01T00:00:00.000Z") }));
+  /** S3 answering a listing of `keys`: those after `StartAfter`, `MaxKeys` at a time. */
+  const bucketOf = (keys: string[]) => (command: unknown) => {
+    const { StartAfter, MaxKeys } = (command as { input: { StartAfter?: string; MaxKeys: number } }).input;
+    const rest = keys.filter((key) => !StartAfter || key > StartAfter);
+    return { Contents: entries(rest.slice(0, MaxKeys)), IsTruncated: rest.length > MaxKeys };
+  };
+
+  test("finds files and folders by name at any depth, whatever the case, and each folder once", async () => {
+    const { factory, sent } = fakeClients(bucketOf(["docs/", "docs/Reports/", "docs/Reports/a.csv", "docs/Reports/annual-REPORT.pdf", "docs/reports-old/x.txt", "docs/z/report.txt", "docs/zebra.txt"]));
+    const found = await createS3({ clientFactory: factory }).search(TARGET, "docs/", "report");
+    expect(found.folders).toEqual([
+      { prefix: "docs/Reports/", name: "Reports" },
+      { prefix: "docs/reports-old/", name: "reports-old" },
+    ]);
+    expect(found.objects.map((object) => object.key)).toEqual(["docs/Reports/annual-REPORT.pdf", "docs/z/report.txt"]);
+    expect(found.objects[0]).toEqual({ key: "docs/Reports/annual-REPORT.pdf", name: "annual-REPORT.pdf", size: 1, last_modified: "2026-01-01T00:00:00.000Z", storage_class: undefined, etag: undefined });
+    expect(found).toMatchObject({ bucket: "b", region: null, prefix: "docs/", query: "report", scanned: 7, next_token: null, truncated: false });
+    // One listing of every level: no delimiter, a thousand keys at a time.
+    expect((sent[0] as { input: unknown }).input).toEqual({ Bucket: "b", Prefix: "docs/", MaxKeys: 1000 });
+  });
+
+  test("a folder's name matches the folder, not the files in it", async () => {
+    const { factory } = fakeClients(bucketOf(["logs/2026/app.txt", "logs/2026/blog.txt"]));
+    const found = await createS3({ clientFactory: factory }).search(TARGET, "", "log");
+    expect(found.folders).toEqual([{ prefix: "logs/", name: "logs" }]);
+    expect(found.objects.map((object) => object.key)).toEqual(["logs/2026/blog.txt"]);
+  });
+
+  test("stops at the limit and goes on right after the last key it looked at", async () => {
+    const { factory, sent } = fakeClients(bucketOf(["d/a1", "d/a2", "d/b", "d/sub/a3", "d/sub/a4"]));
+    const s3 = createS3({ clientFactory: factory, searchPageSize: 2 });
+    const first = await s3.search(TARGET, "d/", "a", undefined, 2);
+    expect(first.objects.map((object) => object.key)).toEqual(["d/a1", "d/a2"]);
+    expect(first).toMatchObject({ scanned: 2, next_token: "d/a2", truncated: true });
+    const second = await s3.search(TARGET, "d/", "a", first.next_token!, 2);
+    expect(second.objects.map((object) => object.key)).toEqual(["d/sub/a3", "d/sub/a4"]);
+    expect(second).toMatchObject({ scanned: 3, next_token: "d/sub/a4", truncated: true });
+    const third = await s3.search(TARGET, "d/", "a", second.next_token!, 2);
+    expect(third).toMatchObject({ folders: [], objects: [], scanned: 0, next_token: null, truncated: false });
+    expect(sent.map((command) => (command as { input: { StartAfter?: string } }).input.StartAfter)).toEqual([undefined, "d/a2", "d/sub/a3", "d/sub/a4"]);
+  });
+
+  test("answers with what it has when its time is up, and says where to go on", async () => {
+    let clock = 0;
+    const answer = bucketOf(["d/x1", "d/x2", "d/x3", "d/x4"]);
+    const { factory, sent } = fakeClients((command) => ((clock += 600), answer(command)));
+    const found = await createS3({ clientFactory: factory, searchPageSize: 1, searchBudgetMs: 1000, now: () => clock }).search(TARGET, "d/", "nothing");
+    expect(found).toMatchObject({ folders: [], objects: [], scanned: 2, next_token: "d/x2", truncated: true });
+    expect(sent).toHaveLength(2);
+  });
+
+  test("a folder an earlier call reported is not reported again when the search goes on inside it", async () => {
+    const { factory } = fakeClients(bucketOf(["d/logs/a", "d/logs/b", "d/logs/deep/c"]));
+    const found = await createS3({ clientFactory: factory }).search(TARGET, "d/", "logs", "d/logs/a");
+    expect(found).toMatchObject({ folders: [], objects: [], scanned: 2, truncated: false });
+  });
+
+  test("S3 errors of a search quote no key", async () => {
+    const { factory } = fakeClients(() => {
+      throw Object.assign(new Error(`denied for ${KEYS.accessKeyId} ${KEYS.secretAccessKey}`), { name: "AccessDenied" });
+    });
+    const failure = await createS3({ clientFactory: factory }).search(TARGET, "d/", "a").catch((error: unknown) => error as StoreError);
+    expect(failure).toMatchObject({ status: 403, code: "AccessDenied" });
+    expect((failure as StoreError).message).not.toContain(KEYS.secretAccessKey);
+  });
+});
+
 describe("link mode: the keys never leave the worker", () => {
   const output: string[] = [];
   const originals = { log: console.log, error: console.error, warn: console.warn, info: console.info, out: process.stdout.write, err: process.stderr.write };
@@ -785,7 +1001,7 @@ describe("link mode: the keys never leave the worker", () => {
     const leaky = (op: string) => async (target: Target) => {
       throw Object.assign(new Error(`${op} failed: ${quoted(target)}`), { name: "SignatureDoesNotMatch" });
     };
-    const throwing: ObjectStore = { list: leaky("list"), head: leaky("head"), presign: leaky("presign"), remove: leaky("remove"), read: leaky("read") };
+    const throwing: ObjectStore = { list: leaky("list"), search: leaky("search"), head: leaky("head"), presign: leaky("presign"), exists: leaky("exists"), presignUpload: leaky("presignUpload"), remove: leaky("remove"), read: leaky("read") };
     const unexpected: ObjectStore = { ...throwing, list: async (target) => Promise.reject(new TypeError(`boom ${quoted(target)}`)) };
     const links = {
       "lnk-1": baseLink(),

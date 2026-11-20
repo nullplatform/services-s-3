@@ -4,7 +4,7 @@
  * business refusals are results too — `{ error }` with an HTTP-like status — and only worker
  * failures are unsuccessful executions.
  */
-import { type Command, CommandError, type ParseOptions, parseCommand, parseLinkOperation } from "./protocol";
+import { type Command, CommandError, FOLDER_ACTIONS, type ParseOptions, parseCommand, parseLinkOperation } from "./protocol";
 import { type Link, type Platform, PlatformError, resolveBucket } from "./platform";
 import { type AssumeRole, type LinkRoleConfig, ROLE_SESSION_SECONDS, createAssumeRole, linkRoleArn, roleSessionName } from "./role";
 import { type ObjectStore, type StaticCredentials, StoreError, type Target, redact } from "./s3";
@@ -12,8 +12,10 @@ import { type ObjectStore, type StaticCredentials, StoreError, type Target, reda
 export interface HandlerConfig {
   /** Accepted specification slugs; a trailing `*` matches a prefix. */
   specifications: string[];
-  /** `delete-object` only when true. */
+  /** `delete-object` and `presign-upload` only when true. */
   allowWrites: boolean;
+  /** The largest file `presign-upload` signs a form for, in bytes (DEFAULT_UPLOAD_MAX_BYTES when unset). */
+  uploadMaxBytes?: number;
   /** Link mode: how many verified execution ids to remember, and for how long (replay guard). */
   replay?: { max?: number; ttlMs?: number; now?: () => number };
   /**
@@ -42,6 +44,10 @@ export function normalisePathPrefix(value: unknown): string {
 }
 
 const WRITE_LEVELS = new Set(["write", "read-write"]);
+/** The operations that change the bucket: off unless the worker allows writes, and only on a link that can write. */
+const WRITE_ACTIONS: ReadonlySet<Command["action"]> = new Set(["delete-object", "presign-upload"]);
+/** 100 MiB: one form, one request; larger files need a multipart upload, which this worker does not sign. */
+export const DEFAULT_UPLOAD_MAX_BYTES = 104_857_600;
 
 /**
  * The services permission the user who ran the execution needs on the link, per operation: the
@@ -49,9 +55,11 @@ const WRITE_LEVELS = new Set(["write", "read-write"]);
  */
 export const LINK_PERMISSION: Record<Command["action"], string> = {
   "list-objects": "service:link:read",
+  "search-objects": "service:link:read",
   "head-object": "service:link:read",
   "read-object": "service:link:read",
   "presign-download": "service:link:read",
+  "presign-upload": "service:link:write",
   "delete-object": "service:link:write",
 };
 
@@ -199,11 +207,12 @@ async function scopeOf(platform: Platform, link: Link, command: Command, config:
 
   const pathPrefix = normalisePathPrefix(attributes.path_prefix);
   if (pathPrefix) {
-    const scoped = command.action === "list-objects" ? command.prefix : command.key!;
-    if (command.action === "list-objects" && !command.prefix) command.prefix = pathPrefix;
-    else if (!scoped.startsWith(pathPrefix)) throw new CommandError(`${command.action === "list-objects" ? "prefix" : "key"} is outside the link's path prefix ${pathPrefix}`, 403, "OUTSIDE_PREFIX");
+    const folder = FOLDER_ACTIONS.has(command.action);
+    const scoped = folder ? command.prefix : command.key!;
+    if (folder && !command.prefix) command.prefix = pathPrefix;
+    else if (!scoped.startsWith(pathPrefix)) throw new CommandError(`${folder ? "prefix" : "key"} is outside the link's path prefix ${pathPrefix}`, 403, "OUTSIDE_PREFIX");
   }
-  if (command.action === "delete-object" && !WRITE_LEVELS.has(String(attributes.access_level ?? ""))) throw new CommandError(`link ${linkId} does not allow writes (access level ${String(attributes.access_level ?? "unknown")})`, 403, "WRITE_NOT_ALLOWED");
+  if (WRITE_ACTIONS.has(command.action) && !WRITE_LEVELS.has(String(attributes.access_level ?? ""))) throw new CommandError(`link ${linkId} does not allow writes (access level ${String(attributes.access_level ?? "unknown")})`, 403, "WRITE_NOT_ALLOWED");
   return { bucket: resolved.bucket, region: resolved.region, pathPrefix };
 }
 
@@ -289,16 +298,26 @@ function scrub(error: unknown, secrets: string[]): unknown {
   return new Error(redact(e?.message ?? String(error), secrets));
 }
 
+/** The form for one upload; a key that already holds an object is refused, so an upload never replaces a file. */
+async function presignUpload(store: ObjectStore, command: Command, target: Target): Promise<unknown> {
+  if (await store.exists(target, command.key!)) throw new CommandError(`${command.key} already exists; delete it first to replace it`, 409, "OBJECT_EXISTS");
+  return store.presignUpload(target, command.key!, command.size!, command.content_type);
+}
+
 async function runOnTarget(store: ObjectStore, command: Command, target: Target): Promise<unknown> {
   switch (command.action) {
     case "list-objects":
       return store.list(target, command.prefix, command.token, command.limit);
+    case "search-objects":
+      return store.search(target, command.prefix, command.query!, command.token, command.limit);
     case "head-object":
       return store.head(target, command.key!);
     case "read-object":
       return store.read(target, command.key!, command.max_bytes!);
     case "presign-download":
       return store.presign(target, command.key!);
+    case "presign-upload":
+      return presignUpload(store, command, target);
     case "delete-object":
       return store.remove(target, command.key!);
   }
@@ -307,12 +326,15 @@ async function runOnTarget(store: ObjectStore, command: Command, target: Target)
 export function createHandler({ platform, store, config, assumeRole = createAssumeRole() }: { platform: Platform; store: ObjectStore; config: HandlerConfig; assumeRole?: AssumeRole }): Handler {
   const replay = createReplayGuard(config.replay);
   return async (command) => {
-    // Gate writes before any lookup: a refused delete costs no platform call.
-    if (command.action === "delete-object" && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
+    // Gate writes before any lookup: a refused delete or upload costs no platform call.
+    if (WRITE_ACTIONS.has(command.action) && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
     // Never act on the payload alone: everything below uses the catalog-verified command.
     const executionId = command.link!.execution_id;
     if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
     const verified = await verifyExecution(platform, command, config);
+    // The size comes from the catalog's record, like every other field: too large is refused before the link is read.
+    const uploadMaxBytes = config.uploadMaxBytes ?? DEFAULT_UPLOAD_MAX_BYTES;
+    if (verified.action === "presign-upload" && verified.size! > uploadMaxBytes) throw new CommandError(`the file is ${verified.size} bytes; this worker signs uploads of up to ${uploadMaxBytes} bytes`, 413, "UPLOAD_TOO_LARGE");
     // One run per execution id: claimed before any link or S3 work.
     if (replay.has(executionId)) throw notVerified(`execution ${executionId} was already run by this worker`);
     replay.claim(executionId);

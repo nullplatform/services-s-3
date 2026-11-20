@@ -3,7 +3,7 @@
  * Installs the S3 browser's link mode in an organization (Node >= 20, no dependencies):
  *
  *   1. the `s3_browser` catalog specification (created, or PATCHed when it exists);
- *   2. its five notification executors (created, or PATCHed per action);
+ *   2. its seven notification executors (created, or PATCHed per action);
  *   3. the agent channel from s3_browser.channel.example.json (created, or PATCHed when one with the
  *      same filters exists at NRN): `package-exec` of the aws-s3-bucket package, the same worker
  *      image that runs the service, on the agents AGENT_SELECTOR names;

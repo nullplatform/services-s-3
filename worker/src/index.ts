@@ -40,10 +40,11 @@ const worker = createWorker({
   link: {
     handler: createHandler({
       platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY, linkSecretsQuery: env.S3_BROWSER_LINK_SECRETS_QUERY ?? DEFAULT_LINK_SECRETS_QUERY }),
-      store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900) }),
+      store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900), uploadTtlSeconds: Number(env.S3_BROWSER_UPLOAD_TTL_SECONDS ?? 300), searchBudgetMs: Number(env.S3_BROWSER_SEARCH_BUDGET_MS ?? 8000) }),
       config: {
         specifications: list(env.S3_BROWSER_SPECIFICATIONS, "aws-s3-bucket*"),
         allowWrites: env.S3_BROWSER_ALLOW_WRITES === "1",
+        uploadMaxBytes: env.S3_BROWSER_UPLOAD_MAX_BYTES ? Number(env.S3_BROWSER_UPLOAD_MAX_BYTES) : undefined,
         // DEMO ONLY, never in a customer organization: see catalog/LINK_MODE.md.
         unverifiedEntityBinding: env.S3_BROWSER_UNVERIFIED_ENTITY_BINDING === "1",
         // Role links: their roles live in this account; unset refuses them (LINK_ROLE_NOT_CONFIGURED).

@@ -11,7 +11,7 @@
  * Every other payload belongs to the bash service and never reaches this module.
  */
 /** The operations of the `s3_browser` specification. */
-export const LINK_ACTIONS = ["list-objects", "head-object", "read-object", "presign-download", "delete-object"] as const;
+export const LINK_ACTIONS = ["list-objects", "search-objects", "head-object", "read-object", "presign-download", "presign-upload", "delete-object"] as const;
 export type Action = (typeof LINK_ACTIONS)[number];
 
 /** Default slug of the per-application catalog specification that selects link mode. */
@@ -19,15 +19,25 @@ export const DEFAULT_LINK_SPECIFICATION = "s3_browser";
 /** The catalog's notification action for an action execution. */
 export const CATALOG_ACTION = "catalog:action:create";
 export const READ_MAX_BYTES = 262_144;
+/** The longest text `search-objects` looks for in a name. */
+export const QUERY_MAX = 128;
 
 export interface Command {
   action: Action;
   prefix: string;
+  /** list-objects: S3's continuation token. search-objects: the last key the previous call looked at. */
   token?: string;
+  /** list-objects: the page size. search-objects: how many matches end the call. */
   limit: number;
   key?: string;
+  /** search-objects only: the text a file's or folder's name must contain, whatever its case. */
+  query?: string;
   /** read-object only: how many bytes to read from the start of the object. */
   max_bytes?: number;
+  /** presign-upload only: the exact size in bytes of the file the upload is for. */
+  size?: number;
+  /** presign-upload only: the content type S3 stores for the object. */
+  content_type?: string;
   /**
    * From the payload: the execution id and specification slug (and, for the opt-in unverified
    * fallback only, the application id it claims). `link_id`, `entity_nrn` and `actor_id` (the user
@@ -35,6 +45,9 @@ export interface Command {
    */
   link?: { execution_id: string; specification_slug: string; envelope_application_id?: string; link_id: string; entity_nrn: string; actor_id: string };
 }
+
+/** The operations that take a `prefix` (a folder) instead of a `key` (an object). */
+export const FOLDER_ACTIONS: ReadonlySet<Action> = new Set<Action>(["list-objects", "search-objects"]);
 
 /** A refusal the caller can act on; `status` follows HTTP semantics for the UI's messages. */
 export class CommandError extends Error {
@@ -54,12 +67,16 @@ export interface ParseOptions {
 /** Fields each link-mode action accepts in `input`; anything else is refused, as the schemas do. */
 export const LINK_INPUT_FIELDS: Record<string, string[]> = {
   "list-objects": ["link_id", "prefix", "token", "limit"],
+  "search-objects": ["link_id", "prefix", "query", "token", "limit"],
   "head-object": ["link_id", "key"],
   "read-object": ["link_id", "key", "max_bytes"],
   "presign-download": ["link_id", "key"],
+  "presign-upload": ["link_id", "key", "size", "content_type"],
   "delete-object": ["link_id", "key"],
 };
 const LINK_ID = /^[A-Za-z0-9-]{1,64}$/;
+/** A media type without parameters, as a browser reports a file's: `text/csv`, `application/pdf`. */
+const CONTENT_TYPE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,62}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,62}$/;
 const EXECUTION_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 const record = (x: unknown): Record<string, unknown> | undefined => (x && typeof x === "object" && !Array.isArray(x) ? (x as Record<string, unknown>) : undefined);
@@ -113,11 +130,28 @@ export function parseLinkOperation(operation: unknown, rawInput: unknown): Comma
   const token = body.token === undefined || body.token === null || body.token === "" ? undefined : String(body.token);
 
   let key: string | undefined;
-  if (action !== "list-objects") {
+  if (!FOLDER_ACTIONS.has(action)) {
     key = typeof body.key === "string" ? body.key : undefined;
     if (!key || key.startsWith("/") || key.endsWith("/") || key.length > KEY_MAX) throw new CommandError("key is required (a relative object key)", 400);
   }
   const command: Command = { action, prefix, token, limit, key };
+  if (action === "search-objects") {
+    const query = body.query;
+    if (typeof query !== "string" || !query.trim() || query.length > QUERY_MAX) throw new CommandError(`query is required (the text to look for, up to ${QUERY_MAX} characters)`, 400);
+    command.query = query;
+    // The token is where the last call stopped: a key under the folder searched, and nothing else.
+    if (token !== undefined && (token.length > KEY_MAX || !token.startsWith(prefix))) throw new CommandError("token must be the next_token of a search of this prefix", 400);
+  }
+  if (action === "presign-upload") {
+    // S3 replaces `${filename}` in a POST's key with the name of the file sent: the key would not be the one signed for.
+    if (key!.includes("${filename}")) throw new CommandError("key may not contain ${filename}", 400);
+    const size = body.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) throw new CommandError("size is required (the file's size in bytes)", 400);
+    command.size = size;
+    const contentType = body.content_type === undefined || body.content_type === null || body.content_type === "" ? undefined : body.content_type;
+    if (contentType !== undefined && (typeof contentType !== "string" || !CONTENT_TYPE.test(contentType))) throw new CommandError("content_type must be a media type such as text/csv", 400);
+    command.content_type = contentType;
+  }
   if (action === "read-object") {
     const maxBytes = body.max_bytes === undefined || body.max_bytes === null ? READ_MAX_BYTES : body.max_bytes;
     if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > READ_MAX_BYTES) throw new CommandError(`max_bytes must be an integer between 1 and ${READ_MAX_BYTES}`, 400);

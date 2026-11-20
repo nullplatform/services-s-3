@@ -37,15 +37,17 @@ Catalog context the worker receives (catalog-entities-api `ActionContext`):
 | action | input (besides link_id) | output |
 |---|---|---|
 | `list-objects` | `prefix?` (relative, no leading `/`, ≤1024), `token?`, `limit?` (1..1000, default 200) | `{ bucket, region, prefix, folders:[{prefix,name}], objects:[{key,name,size,last_modified,storage_class?,etag?}], next_token, truncated }` (same as the existing worker's Listing) |
+| `search-objects` | `prefix?` (as above: the folder searched, every level under it), `query` (1..128, not blank), `token?` (the `next_token` of the previous call), `limit?` (1..1000, default 200: how many matches end the call) | `{ bucket, region, prefix, query, folders:[{prefix,name}], objects:[…as above], scanned, next_token, truncated }` — the files and folders whose **name** (the last part of the key) contains `query`, whatever its case; `name` is that last part. One call looks at as many keys as fit in its time (`S3_BROWSER_SEARCH_BUDGET_MS`) or until `limit` matches: while `truncated`, call again with `token: next_token` (the last key looked at) to go on. `scanned` counts the keys of this call |
 | `head-object` | `key` (relative, no leading/trailing `/`, ≤1024) | `{ key, size, content_type?, last_modified, etag?, storage_class?, metadata }` |
 | `read-object` (new) | `key`, `max_bytes?` (1..262144, default 262144) | `{ key, text, truncated, content_type?, size }` — first `max_bytes` bytes decoded as UTF-8; `truncated` = object larger than what was read |
 | `presign-download` | `key` | `{ key, url, expires_at }` |
+| `presign-upload` | `key` (as above, and no `${filename}`), `size` (bytes, integer ≥ 0), `content_type?` (a media type without parameters) | `{ key, url, fields, expires_at }` — an S3 presigned POST: send each of `fields` (`[{ name, value }]`) and then the file as `file`, as `multipart/form-data`, to `url`. `fields` is a list because the catalog rewrites the keys of an output to snake_case, and S3 takes the names literally (`X-Amz-Signature`) |
 | `delete-object` | `key` | `{ key }` |
 
 - Authorization block (`schema.authorization.entities.grants`): principal `{type:"*"}` gets
-  `read`, `list`, `action:list-objects`, `action:head-object`, `action:read-object`, `action:presign-download`.
-  `delete-object` is granted to nobody by default; whoever installs adds e.g.
-  `{ "principals": [{ "type": "role", "id": <ops role id> }], "actions": ["action:delete-object"] }`.
+  `read`, `list` and the seven actions. Who may change a link's bucket is not decided here: `delete-object` and
+  `presign-upload` need `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
+  `S3_BROWSER_ALLOW_WRITES=1` on the worker.
 
 ## Errors
 
@@ -75,8 +77,10 @@ Worker codes in link mode (CODE → status):
 | `NOT_A_BUCKET` | 400 | the link's service specification does not match `S3_BROWSER_SPECIFICATIONS` |
 | `NO_BUCKET` | 409 | service has no `bucket_name` yet |
 | `OUTSIDE_PREFIX` | 403 | prefix/key outside the link's `path_prefix` |
-| `WRITE_NOT_ALLOWED` | 403 | `delete-object` on a link whose `access_level` is `read` |
-| `WRITES_DISABLED` | 405 | `delete-object` while `S3_BROWSER_ALLOW_WRITES` is not `1` |
+| `WRITE_NOT_ALLOWED` | 403 | `delete-object` or `presign-upload` on a link whose `access_level` is `read` |
+| `WRITES_DISABLED` | 405 | `delete-object` or `presign-upload` while `S3_BROWSER_ALLOW_WRITES` is not `1` |
+| `UPLOAD_TOO_LARGE` | 413 | `presign-upload` with a `size` over `S3_BROWSER_UPLOAD_MAX_BYTES` (default 104857600) |
+| `OBJECT_EXISTS` | 409 | `presign-upload` to a key that already holds an object |
 | S3 / STS error names (`AccessDenied`, `NoSuchKey`, `NotFound`, `NoSuchBucket`, `CredentialsProviderError`, …) | 403/404/500/502 | from AWS, as today (`StoreError`) |
 | `PLATFORM`, `NO_CREDENTIALS`, `WORKER` | ≥500 | worker broken → failed execution |
 
@@ -123,7 +127,7 @@ Worker codes in link mode (CODE → status):
 3b. Permission of the user who ran the execution (`record.actor_id`), once per request, with the agent's key and never
    cached: `GET /authz?nrn=<link.entity_nrn>&action=<permission>&user_id=<actor_id>`, where the permission is
    `service:link:read` for `list-objects`, `head-object`, `read-object` and `presign-download`, and `service:link:write`
-   for `delete-object`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
+   for `delete-object` and `presign-upload`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
    but `{ "granted": true }` → `LINK_ACCESS_DENIED`; a check that fails → `PERMISSION_CHECK_FAILED`. It runs before
    step 4, so a user without the permission learns nothing about the link's state.
 4. `link.status` must be `active` (`LINK_NOT_READY`), and `link.attributes.browser_enabled` must be `true`: off, absent
@@ -133,8 +137,15 @@ Worker codes in link mode (CODE → status):
    `S3_BROWSER_SPECIFICATIONS`, `attributes.bucket_name`, `attributes.bucket_region`). Never from the input.
 6. `path_prefix` (link attribute, may be empty): normalise to end with `/` when non-empty. list with empty
    prefix → list at `path_prefix`; any prefix/key not starting with it → `OUTSIDE_PREFIX`.
-7. `access_level` (`read|write|read-write`): `delete-object` needs `write` or `read-write` (else `WRITE_NOT_ALLOWED`);
-   `WRITES_DISABLED` still applies first. Reads are left to AWS (the `write` level has no GetObject).
+7. `access_level` (`read|write|read-write`): `delete-object` and `presign-upload` need `write` or `read-write` (else
+   `WRITE_NOT_ALLOWED`); `WRITES_DISABLED` still applies first. Reads are left to AWS (the `write` level has no GetObject).
+7b. `presign-upload`: a `size` over `S3_BROWSER_UPLOAD_MAX_BYTES` is refused before the link is read (`UPLOAD_TOO_LARGE`).
+   The key must hold no object (`OBJECT_EXISTS`; asked with a one-key listing, which every access level allows), so an
+   upload never replaces a file; between that check and the upload another writer can still create the key. The form is
+   an S3 presigned POST signed with the link's credentials, valid `S3_BROWSER_UPLOAD_TTL_SECONDS` (default 300; a role
+   link's is capped at its session), whose policy pins the bucket, the exact key, `content-length-range [size, size]`
+   and, when given, the `Content-Type`. The file goes from the browser to S3; it never passes through the catalog or
+   the worker.
 8. S3 client built with the link's static credentials, a fresh client per request (never cached, never shared); a
    request without them is refused, so S3 is never opened with the worker's identity.
 9. Role links: only after steps 3–7 pass (3b included), STS `AssumeRole` on the rebuilt ARN with the worker's own identity (the
@@ -196,7 +207,8 @@ the sync answer is recorded.
   a change to aws-s3-bucket, not to this worker.
 - **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design) and, for a role link, the
   session token in `X-Amz-Security-Token`; the secret never leaves the worker. A role link's URL (and `expires_at`)
-  is capped at the end of its 900 s session.
+  is capped at the end of its 900 s session. The same holds for an upload form's `fields`. Both stay in the catalog's
+  execution record after they expire: whoever reads the record within the form's lifetime can upload that one file.
 - **The permission check leans on authz answering about another user.** `GET /authz?nrn=&action=&user_id=` answers any
   authenticated token about any user today (the "only your own user" guard is on `check_roles` alone). If authz
   restricts it, every request fails closed with `PERMISSION_CHECK_FAILED` until the worker's key is allowed to ask.
@@ -235,6 +247,6 @@ as `invalid_output`. Output schemas therefore describe only the success shape.
 `worker/catalog/install.mjs` (Node ≥ 20, no deps), given `NP_API_KEY` (and optional `NP_API_URL`),
 `NRN` (organization NRN for the channel), `AGENT_API_KEY` and `AGENT_SELECTOR` (the agent tags of the aws-s3-bucket
 service's own channel) for the channel and flags:
-creates the `s3_browser` specification (idempotent: PATCH when it exists), its 5 executors, the agent channel
+creates the `s3_browser` specification (idempotent: PATCH when it exists), its 6 executors, the agent channel
 from `s3_browser.channel.example.json`, and seeds one `s3_browser` entity per application that has a link to an
 `aws-s3-bucket*` service. `--dry-run` prints every request without sending.
