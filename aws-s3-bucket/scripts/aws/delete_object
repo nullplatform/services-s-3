@@ -1,0 +1,156 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# delete_object — the `delete-object` link action: deletes one object of the link's service
+# bucket. The role this workflow runs with can delete any object of any bucket of the
+# installation, so every rule the S3 browser worker applies to a delete (worker/src/handler.ts,
+# worker/src/protocol.ts) is applied here, from the link's own record, before S3 is called.
+#
+# Expects (engine-injected): CONTEXT (the notification), and the AWS credentials exported by
+# utils/assume_role_step. It does not run build_context: that step creates a tfstate bucket.
+#
+# DELETE_OBJECT_LIB_ONLY=1 loads the functions without running (tests/delete_object_test.sh).
+# ---------------------------------------------------------------------------
+
+KEY_MAX=1024
+
+# Worker: normalisePathPrefix (handler.ts) — empty stays empty, anything else ends with "/".
+normalise_path_prefix() {
+  local value="$1"
+  if [ -z "$value" ]; then echo ""; return; fi
+  case "$value" in
+    */) echo "$value" ;;
+    *)  echo "${value}/" ;;
+  esac
+}
+
+# Worker: protocol.ts key check (required, relative, not a folder marker, at most KEY_MAX).
+# Length is counted in bytes (LC_ALL=C): S3's own limit, and never looser than the worker's
+# count of UTF-16 units. Prints the refusal and returns 1, or prints nothing and returns 0.
+key_refusal() {
+  local key="$1" length
+  if [ -z "$key" ] || [[ "$key" == /* ]] || [[ "$key" == */ ]]; then
+    echo "key is required (a relative object key, not a folder)"
+    return 1
+  fi
+  length=$(printf '%s' "$key" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$length" -gt "$KEY_MAX" ]; then
+    echo "key is longer than $KEY_MAX bytes"
+    return 1
+  fi
+  return 0
+}
+
+# Worker: checkOpen + scopeOf (handler.ts), in the same order. $1 is the link as `np link read`
+# prints it, $2 the link id, $3 the key. Prints the refusal and returns 1, or returns 0.
+link_refusal() {
+  local link="$1" link_id="$2" key="$3" status browser_enabled access_level prefix
+  # `updating` is allowed besides `active`: while any action of a link runs, this one included,
+  # service-api rewrites the link's parameters and holds the link in `updating` for that time
+  # (ActionInstanceService updates the link on every action status; LinkInstanceService #afterUpdate).
+  # Every other status (creating, failed, deleting, deleted, archived…) is a link that must not be used.
+  status=$(echo "$link" | jq -r '.status // "unknown"')
+  if [ "$status" != "active" ] && [ "$status" != "updating" ]; then
+    echo "link $link_id is not active (status $status)"
+    return 1
+  fi
+  # Only the boolean true turns it on, as in the worker (`!== true`): the text "true" does not.
+  browser_enabled=$(echo "$link" | jq -r '.attributes.browser_enabled == true')
+  if [ "$browser_enabled" != "true" ]; then
+    echo "the S3 browser is not enabled for link $link_id (its browser_enabled attribute is off)"
+    return 1
+  fi
+  prefix=$(normalise_path_prefix "$(echo "$link" | jq -r '.attributes.path_prefix // ""')")
+  if [ -n "$prefix" ] && [[ "$key" != "$prefix"* ]]; then
+    echo "key is outside the link's path prefix $prefix"
+    return 1
+  fi
+  access_level=$(echo "$link" | jq -r '.attributes.access_level // ""')
+  if [ "$access_level" != "write" ] && [ "$access_level" != "read-write" ]; then
+    echo "link $link_id does not allow writes (access level ${access_level:-unknown})"
+    return 1
+  fi
+  return 0
+}
+
+# Writes the action's results. An action of a link is updated through the link's route: the
+# service's route answers "Action does not belong to the service" for it. Both commands take the
+# ids from NP_ACTION_CONTEXT.
+report() {
+  local results="$1"
+  if [ -n "$(echo "$CONTEXT" | jq -r '.link.id // ""')" ]; then
+    np link action update --results "$results"
+  else
+    np service action update --results "$results"
+  fi
+}
+
+# Reports a refused or failed delete as the action's result and fails the action.
+fail() {
+  local message="$1" key="${2:-}"
+  echo "ERROR: $message" >&2
+  report "$(jq -nc --arg key "$key" --arg message "$message" \
+    '{key: $key, status: "failed", message: $message}')" || true
+  exit 1
+}
+
+main() {
+  local link_id service_id bucket region key link link_service_id message error_file code
+  local -a aws_args
+
+  link_id=$(echo "$CONTEXT" | jq -r '.link.id // ""')
+  if [ -z "$link_id" ]; then
+    fail "delete-object runs on a link, not on the service"
+  fi
+
+  # jq -j and a sentinel: $(...) would drop a key's trailing newlines.
+  key=$(echo "$CONTEXT" | jq -j '.parameters.key // ""'; printf x)
+  key="${key%x}"
+  if ! message=$(key_refusal "$key"); then
+    fail "$message" ""
+  fi
+
+  # The link is read again, not taken from the notification: its status and attributes are what
+  # decide, and the notification may carry neither.
+  link=$(np link read --id "$link_id" --format json) || fail "link $link_id could not be read" "$key"
+
+  service_id=$(echo "$CONTEXT" | jq -r '.service.id // ""')
+  link_service_id=$(echo "$link" | jq -r '.service_id // ""')
+  if [ -z "$service_id" ] || [ "$link_service_id" != "$service_id" ]; then
+    fail "link $link_id does not belong to this service" "$key"
+  fi
+
+  if ! message=$(link_refusal "$link" "$link_id" "$key"); then
+    fail "$message" "$key"
+  fi
+
+  # The bucket comes from the service only, never from a parameter or the link.
+  bucket=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_name // ""')
+  region=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_region // ""')
+  if [ -z "$bucket" ]; then
+    fail "the service has no bucket yet" "$key"
+  fi
+
+  echo "Deleting one object from the bucket of link $link_id"
+  error_file=$(mktemp)
+  # The S3 error text can name the role the workflow runs as: it stays out of the result and the
+  # log, and only its error code is kept.
+  aws_args=(s3api delete-object "--bucket=$bucket" "--key=$key")
+  if [ -n "$region" ]; then aws_args+=("--region=$region"); fi
+  if ! aws "${aws_args[@]}" >/dev/null 2>"$error_file"; then
+    code=$(sed -n 's/.*An error occurred (\([A-Za-z0-9]*\)).*/\1/p' "$error_file" | head -1)
+    rm -f "$error_file"
+    fail "S3 refused the delete (${code:-unknown error})" "$key"
+  fi
+  rm -f "$error_file"
+
+  # S3 answers a delete the same whether the key existed or not (as the browser's worker does),
+  # and the bucket is versioned, so this adds a delete marker.
+  report "$(jq -nc --arg key "$key" \
+    '{key: $key, status: "deleted", message: "Delete requested. S3 does not say whether the key existed; the bucket is versioned, so earlier versions are kept."}')"
+}
+
+if [ -z "${DELETE_OBJECT_LIB_ONLY:-}" ]; then
+  main
+fi
