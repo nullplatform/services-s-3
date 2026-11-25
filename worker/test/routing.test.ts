@@ -42,13 +42,13 @@ const catalog = (slug: string, specification: string, extra: Record<string, unkn
 describe("routing: link mode", () => {
   test("a catalog execution of s3_browser is the worker's; bash never runs", async () => {
     const { answer, spawned, linked } = setup();
-    for (const slug of ["list-objects", "head-object", "read-object", "presign-download", "delete-object"]) {
+    for (const slug of ["list-objects", "head-object", "presign-download", "delete-object"]) {
       const { success, output } = await answer(catalog(slug, "s3_browser"));
       expect(success).toBe(true);
       // The worker's JSON on stdout, which the agent surfaces as the command's stdOut.
       expect(output).toEqual({ success: true, data: { stdout: JSON.stringify({ handled: slug }) } });
     }
-    expect(linked.map((command) => [command.action, command.link?.execution_id])).toEqual(["list-objects", "head-object", "read-object", "presign-download", "delete-object"].map((slug) => [slug, "exec-1"]));
+    expect(linked.map((command) => [command.action, command.link?.execution_id])).toEqual(["list-objects", "head-object", "presign-download", "delete-object"].map((slug) => [slug, "exec-1"]));
     expect(spawned).toEqual([]);
   });
 

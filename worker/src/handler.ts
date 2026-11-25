@@ -57,7 +57,6 @@ export const LINK_PERMISSION: Record<Command["action"], string> = {
   "list-objects": "service:link:read",
   "search-objects": "service:link:read",
   "head-object": "service:link:read",
-  "read-object": "service:link:read",
   "presign-download": "service:link:read",
   "presign-upload": "service:link:write",
   "delete-object": "service:link:write",
@@ -312,10 +311,8 @@ async function runOnTarget(store: ObjectStore, command: Command, target: Target)
       return store.search(target, command.prefix, command.query!, command.token, command.limit);
     case "head-object":
       return store.head(target, command.key!);
-    case "read-object":
-      return store.read(target, command.key!, command.max_bytes!);
     case "presign-download":
-      return store.presign(target, command.key!);
+      return store.presign(target, command.key!, command.disposition);
     case "presign-upload":
       return presignUpload(store, command, target);
     case "delete-object":

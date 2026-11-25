@@ -84,9 +84,6 @@ const store: ObjectStore = {
   async remove(_t, key) {
     return { key };
   },
-  async read(_t, key, maxBytes) {
-    return { key, text: "x".repeat(Math.min(maxBytes, 3)), truncated: true, content_type: "text/plain", size: 10 };
-  },
 };
 const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
 
@@ -94,8 +91,7 @@ const inputs: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1", prefix: "docs/", limit: 50, token: "t" },
   "search-objects": { link_id: "lnk-1", prefix: "docs/", query: "Report", limit: 50, token: "docs/2026/a.csv" },
   "head-object": { link_id: "lnk-1", key: "docs/a.txt" },
-  "read-object": { link_id: "lnk-1", key: "docs/a.txt", max_bytes: 1024 },
-  "presign-download": { link_id: "lnk-1", key: "docs/a.txt" },
+  "presign-download": { link_id: "lnk-1", key: "docs/a.txt", disposition: "inline" },
   "presign-upload": { link_id: "lnk-1", key: "docs/a.txt", size: 1024, content_type: "text/plain" },
   "delete-object": { link_id: "lnk-1", key: "docs/a.txt" },
 };
@@ -103,7 +99,6 @@ const minimal: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1" },
   "search-objects": { link_id: "lnk-1", query: "a" },
   "head-object": { link_id: "lnk-1", key: "a" },
-  "read-object": { link_id: "lnk-1", key: "a" },
   "presign-download": { link_id: "lnk-1", key: "a" },
   "presign-upload": { link_id: "lnk-1", key: "a", size: 0 },
   "delete-object": { link_id: "lnk-1", key: "a" },
@@ -191,7 +186,7 @@ describe("s3_browser catalog specification", () => {
       if (slug === "search-objects") {
         refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", query: "" }, { link_id: "lnk-1", query: "   " }, { link_id: "lnk-1", query: 7 }, { link_id: "lnk-1", query: "x".repeat(129) }, { link_id: "lnk-1", query: "a", key: "a" });
       }
-      if (slug === "read-object") refused.push({ link_id: "lnk-1", key: "a", max_bytes: 0 }, { link_id: "lnk-1", key: "a", max_bytes: 262145 });
+      if (slug === "presign-download") refused.push({ link_id: "lnk-1", key: "a", disposition: "download" }, { link_id: "lnk-1", key: "a", disposition: "Inline" }, { link_id: "lnk-1", key: "a", disposition: "" }, { link_id: "lnk-1", key: "a", disposition: null }, { link_id: "lnk-1", key: "a", disposition: 7 });
       if (slug === "presign-upload") {
         refused.push(
           { link_id: "lnk-1", key: "a" },
@@ -211,10 +206,10 @@ describe("s3_browser catalog specification", () => {
     });
   }
 
-  test("everyone gets read, list and every action: who may read or change a link is the worker's check", () => {
+  test("everyone gets read, list and every action (no read-object: the worker never handles file content): who may read or change a link is the worker's check", () => {
     const grants: Array<{ principals: Array<{ type: string }>; actions: string[] }> = specification.schema.authorization.entities.grants;
     expect(grants).toEqual([
-      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:read-object", "action:presign-download", "action:presign-upload", "action:delete-object"] },
+      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload", "action:delete-object"] },
     ]);
     // Nobody creates or deletes the entity from the block.
     for (const verb of ["create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);

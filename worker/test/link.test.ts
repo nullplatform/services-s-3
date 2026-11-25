@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
+import { ListObjectsV2Command, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { type Handler, createHandler, createReplayGuard, linkOwnedBy, normalisePathPrefix, runCommand as runPayload } from "../src/handler";
 import { type CatalogEntity, type CatalogExecution, createPlatform, type Link, type Platform, PlatformError } from "../src/platform";
 import { CommandError, type ParseOptions, isLinkPayload, parseCommand as parsePayload, parseLinkOperation } from "../src/protocol";
 import { type AssumeRole, type AssumeRoleRequest, linkRoleArn, linkRoleName, roleSessionName } from "../src/role";
-import { createS3, defaultClientFactory, type ObjectStore, type StoreError, type Target, totalFromContentRange } from "../src/s3";
+import { createS3, defaultClientFactory, type ObjectStore, type StoreError, type Target } from "../src/s3";
 
 // Distinctive values: any appearance of these in an output is a leak.
 const KEY_ID = "AKIALINKKEYID0000001";
@@ -119,17 +119,13 @@ function recordingStore(existing: string[] = []) {
       calls.push({ op: "head", target, arg: key });
       return { key, size: 1, last_modified: null, metadata: {} };
     },
-    async presign(target, key) {
-      calls.push({ op: "presign", target, arg: key });
+    async presign(target, key, disposition) {
+      calls.push({ op: "presign", target, arg: disposition === undefined ? key : [key, disposition] });
       return { key, url: `https://example.invalid/${key}`, expires_at: "2026-01-01T00:00:00.000Z" };
     },
     async remove(target, key) {
       calls.push({ op: "remove", target, arg: key });
       return { key };
-    },
-    async read(target, key, maxBytes) {
-      calls.push({ op: "read", target, arg: [key, maxBytes] });
-      return { key, text: "hi", truncated: false, size: 2 };
     },
   };
   return { store, calls };
@@ -233,18 +229,24 @@ describe("link mode: protocol", () => {
     expect(() => parseLinkOperation("rm-rf", { link_id: "lnk-1" })).toThrow(CommandError);
   });
 
-  test("read-object: max_bytes defaults to 262144 and is bounded", () => {
-    expect(parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt" }).max_bytes).toBe(262144);
-    expect(parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: 1 }).max_bytes).toBe(1);
-    for (const bad of [0, 262145, 1.5, "10"]) expect(() => parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: bad })).toThrow(/max_bytes/);
+  test("presign-download: disposition is attachment by default, or inline, and nothing else", () => {
+    expect(parseLinkOperation("presign-download", { link_id: "lnk-1", key: "a.txt" }).disposition).toBe("attachment");
+    expect(parseLinkOperation("presign-download", { link_id: "lnk-1", key: "a.txt", disposition: "attachment" }).disposition).toBe("attachment");
+    expect(parseLinkOperation("presign-download", { link_id: "lnk-1", key: "a.txt", disposition: "inline" }).disposition).toBe("inline");
+    for (const bad of ["download", "Inline", "", null, 7, true]) expect(() => parseLinkOperation("presign-download", { link_id: "lnk-1", key: "a.txt", disposition: bad })).toThrow(/disposition/);
+  });
+
+  test("read-object does not exist: the worker never handles file content", () => {
+    expect(() => parseLinkOperation("read-object", { link_id: "lnk-1", key: "a.txt" })).toThrow(/unknown action/);
+    expect(() => parseCommand(JSON.stringify({ notification: { action: "catalog:action:create", id: "exec-1", slug: "read-object", specification: { slug: "s3_browser" } } }))).toThrow(/unknown action/);
   });
 
   test("only a catalog execution of the link specification is link mode", () => {
     const notLink = [
       // The old agent-identity shapes: a direct command, the bucket-entity catalog, a service action.
-      { action: "read-object", service_id: "svc-1", key: "a" },
+      { action: "head-object", service_id: "svc-1", key: "a" },
       { command: { action: "list-objects", service_id: "svc-1" } },
-      { action: "catalog:action:create", slug: "read-object", input: { key: "a" }, entity: { bucket_name: "b", region: "r" }, specification: { slug: "aws-s3-bucket" } },
+      { action: "catalog:action:create", slug: "head-object", input: { key: "a" }, entity: { bucket_name: "b", region: "r" }, specification: { slug: "aws-s3-bucket" } },
       { action: "service:action:create", specification: { slug: "list-objects" }, parameters: {}, service: { id: "svc-1", specification: { slug: "aws-s3-bucket" } } },
       // The s3_browser slug alone, or the catalog action alone, is not enough.
       { slug: "list-objects", input: { link_id: "lnk-1" }, specification: { slug: "s3_browser" } },
@@ -324,7 +326,7 @@ describe("link mode: handler", () => {
   test("the user who ran the execution needs the link's read permission, asked at the link's own NRN", async () => {
     const scopeNrn = `${APP_NRN}:scope=9`;
     const { handler, asked } = setup({ "lnk-1": baseLink(), "lnk-2": baseLink({ id: "lnk-2", entity_nrn: scopeNrn }) });
-    for (const [slug, input] of [["list-objects", {}], ["search-objects", { query: "a" }], ["head-object", { key: "a.txt" }], ["read-object", { key: "a.txt" }], ["presign-download", { key: "a.txt" }]] as const) {
+    for (const [slug, input] of [["list-objects", {}], ["search-objects", { query: "a" }], ["head-object", { key: "a.txt" }], ["presign-download", { key: "a.txt" }], ["presign-download", { key: "a.txt", disposition: "inline" }]] as const) {
       expect(parse(await runCommand(linkEnvelope(slug, { link_id: "lnk-1", ...input }), handler)).error).toBeUndefined();
     }
     await runCommand(linkEnvelope("list-objects", { link_id: "lnk-2" }), handler);
@@ -459,7 +461,7 @@ describe("link mode: handler", () => {
     // A search with no folder searches the link's own, and never above it.
     expect(parse(await runCommand(linkEnvelope("search-objects", { link_id: "lnk-1", query: "a" }), handler)).prefix).toBe("uploads/");
     expect(calls.at(-1)).toMatchObject({ op: "search", arg: ["uploads/", "a", undefined, 200] });
-    expect(parse(await runCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "uploads/a.txt" }), handler))).toMatchObject({ key: "uploads/a.txt" });
+    expect(parse(await runCommand(linkEnvelope("presign-download", { link_id: "lnk-1", key: "uploads/a.txt" }), handler))).toMatchObject({ key: "uploads/a.txt" });
     const before = calls.length;
     for (const [slug, input] of [
       ["list-objects", { prefix: "upload" }],
@@ -468,7 +470,7 @@ describe("link mode: handler", () => {
       ["search-objects", { prefix: "other/", query: "a" }],
       ["search-objects", { prefix: "upload", query: "a" }],
       ["head-object", { key: "other/a.txt" }],
-      ["read-object", { key: "uploadsX/a.txt" }],
+      ["presign-download", { key: "uploadsX/a.txt", disposition: "inline" }],
       ["presign-download", { key: "a.txt" }],
     ] as const) {
       expect(parse(await runCommand(linkEnvelope(slug, { link_id: "lnk-1", ...input }), handler)).error).toMatchObject({ status: 403, code: "OUTSIDE_PREFIX" });
@@ -518,10 +520,13 @@ describe("link mode: handler", () => {
     expect(calls.at(-1)).toMatchObject({ op: "search", target: { bucket: "link-bucket" }, arg: ["docs/", "Match", "docs/a/b.txt", 20] });
   });
 
-  test("read-object passes max_bytes to the store", async () => {
+  test("presign-download passes the disposition to the store: attachment unless inline is asked for", async () => {
     const { handler, calls } = setup();
-    expect(parse(await runCommand(linkEnvelope("read-object", { link_id: "lnk-1", key: "a.txt", max_bytes: 10 }), handler))).toEqual({ key: "a.txt", text: "hi", truncated: false, size: 2 });
-    expect(calls.at(-1)?.arg).toEqual(["a.txt", 10]);
+    await runCommand(linkEnvelope("presign-download", { link_id: "lnk-1", key: "a.txt" }), handler);
+    expect(calls.at(-1)).toMatchObject({ op: "presign", arg: ["a.txt", "attachment"] });
+    await runCommand(linkEnvelope("presign-download", { link_id: "lnk-1", key: "a.txt", disposition: "inline" }), handler);
+    expect(calls.at(-1)).toMatchObject({ op: "presign", arg: ["a.txt", "inline"] });
+    expect(parse(await runCommand(linkEnvelope("presign-download", { link_id: "lnk-1", key: "a.txt", disposition: "download" }), handler)).error).toMatchObject({ code: "EXECUTION_NOT_VERIFIED", message: expect.stringContaining("disposition") });
   });
 });
 
@@ -751,8 +756,6 @@ function fakeClients(answer: (command: unknown) => unknown = () => ({})) {
   return { factory, built, sent };
 }
 
-const body = (text: string | Uint8Array) => ({ transformToByteArray: async () => (typeof text === "string" ? new TextEncoder().encode(text) : text) });
-
 describe("link mode: S3 store", () => {
   test("every request gets a fresh client with the target's credentials; none is cached", async () => {
     const { factory, built, sent } = fakeClients(() => ({ Contents: [] }));
@@ -801,44 +804,6 @@ describe("link mode: S3 store", () => {
     const client = defaultClientFactory({ region: "us-east-1", credentials: { accessKeyId: "AKIA_STATIC", secretAccessKey: "static-secret" } });
     const credentials = await (client.config.credentials as () => Promise<{ accessKeyId: string; secretAccessKey: string }>)();
     expect(credentials).toMatchObject({ accessKeyId: "AKIA_STATIC", secretAccessKey: "static-secret" });
-  });
-
-  test("read-object: ranged GetObject, truncation from Content-Range, total size", async () => {
-    const { factory, sent } = fakeClients((command) => (command instanceof GetObjectCommand ? { Body: body("0123456789"), ContentRange: "bytes 0-9/100", ContentLength: 10, ContentType: "text/plain" } : {}));
-    const s3 = createS3({ clientFactory: factory });
-    expect(await s3.read({ bucket: "b", credentials: KEYS }, "a.txt", 10)).toEqual({ key: "a.txt", text: "0123456789", truncated: true, content_type: "text/plain", size: 100 });
-    expect((sent.at(-1) as GetObjectCommand).input).toMatchObject({ Bucket: "b", Key: "a.txt", Range: "bytes=0-9" });
-  });
-
-  test("read-object: a whole small object is not truncated", async () => {
-    const { factory } = fakeClients(() => ({ Body: body("héllo"), ContentRange: "bytes 0-5/6", ContentLength: 6 }));
-    expect(await createS3({ clientFactory: factory }).read({ bucket: "b", credentials: KEYS }, "a.txt", 262144)).toEqual({ key: "a.txt", text: "héllo", truncated: false, content_type: undefined, size: 6 });
-  });
-
-  test("read-object: without Content-Range, ContentLength vs bytes read; never more than max", async () => {
-    const { factory } = fakeClients(() => ({ Body: body("abcdefgh"), ContentLength: 8 }));
-    expect(await createS3({ clientFactory: factory }).read({ bucket: "b", credentials: KEYS }, "a.txt", 4)).toMatchObject({ text: "abcd", truncated: true, size: 8 });
-  });
-
-  test("read-object: a multibyte character cut by the range is held back", async () => {
-    const bytes = new TextEncoder().encode("aé"); // 61 c3 a9
-    const { factory } = fakeClients(() => ({ Body: body(bytes.subarray(0, 2)), ContentRange: "bytes 0-1/3" }));
-    expect(await createS3({ clientFactory: factory }).read({ bucket: "b", credentials: KEYS }, "a.txt", 2)).toMatchObject({ text: "a", truncated: true, size: 3 });
-  });
-
-  test("read-object: an empty object (416 on the range) is empty text", async () => {
-    const { factory } = fakeClients((command) => {
-      if (command instanceof GetObjectCommand) throw Object.assign(new Error("The requested range is not satisfiable"), { name: "InvalidRange", $metadata: { httpStatusCode: 416 } });
-      if (command instanceof HeadObjectCommand) return { ContentLength: 0, ContentType: "text/plain" };
-      return {};
-    });
-    expect(await createS3({ clientFactory: factory }).read({ bucket: "b", credentials: KEYS }, "empty.txt", 10)).toEqual({ key: "empty.txt", text: "", truncated: false, content_type: "text/plain", size: 0 });
-  });
-
-  test("totalFromContentRange", () => {
-    expect(totalFromContentRange("bytes 0-9/100")).toBe(100);
-    expect(totalFromContentRange("bytes 0-9/*")).toBeUndefined();
-    expect(totalFromContentRange(undefined)).toBeUndefined();
   });
 
   test("S3 errors quoting the keys are redacted", async () => {
@@ -1001,7 +966,7 @@ describe("link mode: the keys never leave the worker", () => {
     const leaky = (op: string) => async (target: Target) => {
       throw Object.assign(new Error(`${op} failed: ${quoted(target)}`), { name: "SignatureDoesNotMatch" });
     };
-    const throwing: ObjectStore = { list: leaky("list"), search: leaky("search"), head: leaky("head"), presign: leaky("presign"), exists: leaky("exists"), presignUpload: leaky("presignUpload"), remove: leaky("remove"), read: leaky("read") };
+    const throwing: ObjectStore = { list: leaky("list"), search: leaky("search"), head: leaky("head"), presign: leaky("presign"), exists: leaky("exists"), presignUpload: leaky("presignUpload"), remove: leaky("remove") };
     const unexpected: ObjectStore = { ...throwing, list: async (target) => Promise.reject(new TypeError(`boom ${quoted(target)}`)) };
     const links = {
       "lnk-1": baseLink(),
@@ -1026,8 +991,8 @@ describe("link mode: the keys never leave the worker", () => {
             ["list-objects", {}],
             ["list-objects", { prefix: "x/" }],
             ["head-object", { key: "a.txt" }],
-            ["read-object", { key: "a.txt", max_bytes: 5 }],
             ["presign-download", { key: "a.txt" }],
+            ["presign-download", { key: "a.txt", disposition: "inline" }],
             ["delete-object", { key: "a.txt" }],
           ] as const) {
             results.push(await runCommand(linkEnvelope(slug, { link_id: linkId, ...input }), handler));
@@ -1179,6 +1144,31 @@ describe("link mode: role links", () => {
     // Key links (no expiration) keep the configured TTL.
     await s3.presign({ bucket: "b", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } }, "a.txt");
     expect(requested).toBe(3600);
+  });
+
+  test("presign inline: plain text, shown in the browser, valid 60 seconds by default and never past the session", async () => {
+    const asked: Array<{ input: Record<string, unknown>; expiresIn?: number }> = [];
+    const presign = (async (_client: unknown, command: { input: Record<string, unknown> }, options?: { expiresIn?: number }) => (asked.push({ input: command.input, expiresIn: options?.expiresIn }), "https://example.invalid/signed")) as never;
+    const at = Date.parse("2026-01-01T00:00:00.000Z");
+    const target = { bucket: "b", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } };
+    const s3 = createS3({ clientFactory: fakeClients().factory, presign, now: () => at });
+
+    expect(await s3.presign(target, "docs/a.html", "inline")).toEqual({ key: "docs/a.html", url: "https://example.invalid/signed", expires_at: "2026-01-01T00:01:00.000Z" });
+    expect(asked.at(-1)).toEqual({ input: { Bucket: "b", Key: "docs/a.html", ResponseContentDisposition: "inline", ResponseContentType: "text/plain; charset=utf-8" }, expiresIn: 60 });
+
+    // The attachment link is what it always was: the download TTL and a filename.
+    expect((await s3.presign(target, "docs/a.html")).expires_at).toBe("2026-01-01T00:15:00.000Z");
+    expect(asked.at(-1)).toEqual({ input: { Bucket: "b", Key: "docs/a.html", ResponseContentDisposition: 'attachment; filename="a.html"' }, expiresIn: 900 });
+    await s3.presign(target, "docs/a.html", "attachment");
+    expect(asked.at(-1)!.input).toEqual({ Bucket: "b", Key: "docs/a.html", ResponseContentDisposition: 'attachment; filename="a.html"' });
+
+    // The view TTL is its own option, and a role session still caps it.
+    const custom = createS3({ clientFactory: fakeClients().factory, presign, now: () => at, viewTtlSeconds: 30, downloadTtlSeconds: 3600 });
+    await custom.presign(target, "a.txt", "inline");
+    expect(asked.at(-1)!.expiresIn).toBe(30);
+    const session = { ...target, credentials: { ...target.credentials, expiration: new Date(at + 20_000) } };
+    expect((await custom.presign(session, "a.txt", "inline")).expires_at).toBe("2026-01-01T00:00:20.000Z");
+    expect(asked.at(-1)!.expiresIn).toBe(20);
   });
 
   test("ownership, status, service, prefix and write checks apply as for key links, before any AssumeRole", async () => {

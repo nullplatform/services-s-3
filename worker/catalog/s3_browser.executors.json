@@ -15,11 +15,6 @@
     "timeout_ms": 15000
   },
   {
-    "action": "read-object",
-    "transport": "notification",
-    "timeout_ms": 15000
-  },
-  {
     "action": "presign-download",
     "transport": "notification",
     "timeout_ms": 15000

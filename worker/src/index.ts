@@ -40,7 +40,7 @@ const worker = createWorker({
   link: {
     handler: createHandler({
       platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY, linkSecretsQuery: env.S3_BROWSER_LINK_SECRETS_QUERY ?? DEFAULT_LINK_SECRETS_QUERY }),
-      store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900), uploadTtlSeconds: Number(env.S3_BROWSER_UPLOAD_TTL_SECONDS ?? 300), searchBudgetMs: Number(env.S3_BROWSER_SEARCH_BUDGET_MS ?? 8000) }),
+      store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900), viewTtlSeconds: Number(env.S3_BROWSER_VIEW_TTL_SECONDS ?? 60), uploadTtlSeconds: Number(env.S3_BROWSER_UPLOAD_TTL_SECONDS ?? 300), searchBudgetMs: Number(env.S3_BROWSER_SEARCH_BUDGET_MS ?? 8000) }),
       config: {
         specifications: list(env.S3_BROWSER_SPECIFICATIONS, "aws-s3-bucket*"),
         allowWrites: env.S3_BROWSER_ALLOW_WRITES === "1",

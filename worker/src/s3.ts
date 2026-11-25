@@ -7,6 +7,7 @@
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { Disposition } from "./protocol";
 
 export interface Folder {
   prefix: string;
@@ -85,17 +86,6 @@ export interface Upload {
   expires_at: string;
 }
 
-export interface ObjectText {
-  key: string;
-  /** The first bytes read, decoded as UTF-8. */
-  text: string;
-  /** The object is larger than what was read. */
-  truncated: boolean;
-  content_type?: string;
-  /** The object's total size in bytes. */
-  size: number;
-}
-
 /** Static credentials for one target (a link's IAM user or role session); never logged, never returned. */
 export interface StaticCredentials {
   accessKeyId: string;
@@ -118,13 +108,13 @@ export interface ObjectStore {
   /** The names containing `query` under `prefix`, resuming after the key `after`; ends at `limit` matches or its time budget. */
   search(target: Target, prefix: string, query: string, after?: string, limit?: number): Promise<SearchResult>;
   head(target: Target, key: string): Promise<ObjectMeta>;
-  presign(target: Target, key: string): Promise<Download>;
+  /** A signed GET. `inline` is a short-lived link that serves the object as plain text (never as HTML or SVG). */
+  presign(target: Target, key: string, disposition?: Disposition): Promise<Download>;
   /** Whether an object with exactly this key exists; asked by listing, which every access level allows. */
   exists(target: Target, key: string): Promise<boolean>;
   /** A form that uploads one file of exactly `size` bytes to exactly `key`, and nothing else. */
   presignUpload(target: Target, key: string, size: number, contentType?: string): Promise<Upload>;
   remove(target: Target, key: string): Promise<{ key: string }>;
-  read(target: Target, key: string, maxBytes: number): Promise<ObjectText>;
 }
 
 export class StoreError extends Error {
@@ -137,6 +127,8 @@ export class StoreError extends Error {
 interface Options {
   defaultRegion?: string;
   downloadTtlSeconds?: number;
+  /** Lifetime of an `inline` (view) link: short, since it is meant to be opened at once. */
+  viewTtlSeconds?: number;
   uploadTtlSeconds?: number;
   clientFactory?: (config: S3ClientConfig & { credentials: NonNullable<S3ClientConfig["credentials"]> }) => S3Client;
   presign?: typeof getSignedUrl;
@@ -173,13 +165,7 @@ export function redact(message: string, secrets: Array<string | undefined>): str
   return out;
 }
 
-/** `bytes 0-99/1234` → 1234; undefined when absent or unknown (`*`). */
-export function totalFromContentRange(value: string | undefined): number | undefined {
-  const match = /\/(\d+)\s*$/.exec(value ?? "");
-  return match ? Number(match[1]) : undefined;
-}
-
-export function createS3({ defaultRegion, downloadTtlSeconds = 900, uploadTtlSeconds = 300, searchBudgetMs = 8000, searchPageSize = 1000, clientFactory = defaultClientFactory, presign = getSignedUrl, presignPost = createPresignedPost, now = Date.now }: Options = {}): ObjectStore {
+export function createS3({ defaultRegion, downloadTtlSeconds = 900, viewTtlSeconds = 60, uploadTtlSeconds = 300, searchBudgetMs = 8000, searchPageSize = 1000, clientFactory = defaultClientFactory, presign = getSignedUrl, presignPost = createPresignedPost, now = Date.now }: Options = {}): ObjectStore {
   const client = (target: Target) => {
     const region = target.region || defaultRegion || "us-east-1";
     const { credentials } = target;
@@ -253,13 +239,19 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, uploadTtlSec
         const response = await client(target).send(new HeadObjectCommand({ Bucket: target.bucket, Key: key }));
         return { key, size: response.ContentLength ?? 0, content_type: response.ContentType, last_modified: response.LastModified?.toISOString() ?? null, etag: response.ETag, storage_class: response.StorageClass, metadata: response.Metadata ?? {} };
       }),
-    presign: (target, key) =>
+    presign: (target, key, disposition = "attachment") =>
       wrap(target, async () => {
         const filename = key.split("/").pop() ?? key;
         // A role session's URL stops working when the session ends: never promise longer.
         const expiration = target.credentials?.expiration;
-        const ttl = expiration ? Math.max(1, Math.min(downloadTtlSeconds, Math.floor((expiration.getTime() - now()) / 1000))) : downloadTtlSeconds;
-        const url = await presign(client(target), new GetObjectCommand({ Bucket: target.bucket, Key: key, ResponseContentDisposition: `attachment; filename="${filename.replace(/"/g, "")}"` }), { expiresIn: ttl });
+        const wanted = disposition === "inline" ? viewTtlSeconds : downloadTtlSeconds;
+        const ttl = expiration ? Math.max(1, Math.min(wanted, Math.floor((expiration.getTime() - now()) / 1000))) : wanted;
+        // `inline` is always plain text: whatever the object's own type, HTML or SVG can never render in the bucket's origin.
+        const headers =
+          disposition === "inline"
+            ? { ResponseContentDisposition: "inline", ResponseContentType: "text/plain; charset=utf-8" }
+            : { ResponseContentDisposition: `attachment; filename="${filename.replace(/"/g, "")}"` };
+        const url = await presign(client(target), new GetObjectCommand({ Bucket: target.bucket, Key: key, ...headers }), { expiresIn: ttl });
         return { key, url, expires_at: new Date(now() + ttl * 1000).toISOString() };
       }),
     exists: (target, key) =>
@@ -287,32 +279,6 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, uploadTtlSec
       wrap(target, async () => {
         await client(target).send(new DeleteObjectCommand({ Bucket: target.bucket, Key: key }));
         return { key };
-      }),
-    read: (target, key, maxBytes) =>
-      wrap(target, async () => {
-        const s3 = client(target);
-        let response;
-        try {
-          response = await s3.send(new GetObjectCommand({ Bucket: target.bucket, Key: key, Range: `bytes=0-${maxBytes - 1}` }));
-        } catch (error) {
-          // A range on an empty object is a 416: answer it as the empty text it is.
-          const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
-          if (e?.name !== "InvalidRange" && e?.$metadata?.httpStatusCode !== 416) throw error;
-          const head = await s3.send(new HeadObjectCommand({ Bucket: target.bucket, Key: key }));
-          if ((head.ContentLength ?? 0) !== 0) throw error;
-          return { key, text: "", truncated: false, content_type: head.ContentType, size: 0 };
-        }
-        const body = response.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
-        const all = body?.transformToByteArray ? await body.transformToByteArray() : new Uint8Array();
-        // Never hand back more than asked for, even if the range was ignored.
-        const bytes = all.length > maxBytes ? all.subarray(0, maxBytes) : all;
-        const total = totalFromContentRange(response.ContentRange) ?? (response.ContentRange ? undefined : response.ContentLength) ?? all.length;
-        const size = Math.max(total, all.length);
-        const truncated = size > bytes.length;
-        // `stream: true` holds back a multibyte character cut by the range instead of
-        // decoding it as a replacement character.
-        const text = new TextDecoder("utf-8").decode(bytes, { stream: truncated });
-        return { key, text, truncated, content_type: response.ContentType, size };
       }),
   };
 }

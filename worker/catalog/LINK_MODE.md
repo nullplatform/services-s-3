@@ -39,13 +39,20 @@ Catalog context the worker receives (catalog-entities-api `ActionContext`):
 | `list-objects` | `prefix?` (relative, no leading `/`, ≤1024), `token?`, `limit?` (1..1000, default 200) | `{ bucket, region, prefix, folders:[{prefix,name}], objects:[{key,name,size,last_modified,storage_class?,etag?}], next_token, truncated }` (same as the existing worker's Listing) |
 | `search-objects` | `prefix?` (as above: the folder searched, every level under it), `query` (1..128, not blank), `token?` (the `next_token` of the previous call), `limit?` (1..1000, default 200: how many matches end the call) | `{ bucket, region, prefix, query, folders:[{prefix,name}], objects:[…as above], scanned, next_token, truncated }` — the files and folders whose **name** (the last part of the key) contains `query`, whatever its case; `name` is that last part. One call looks at as many keys as fit in its time (`S3_BROWSER_SEARCH_BUDGET_MS`) or until `limit` matches: while `truncated`, call again with `token: next_token` (the last key looked at) to go on. `scanned` counts the keys of this call |
 | `head-object` | `key` (relative, no leading/trailing `/`, ≤1024) | `{ key, size, content_type?, last_modified, etag?, storage_class?, metadata }` |
-| `read-object` (new) | `key`, `max_bytes?` (1..262144, default 262144) | `{ key, text, truncated, content_type?, size }` — first `max_bytes` bytes decoded as UTF-8; `truncated` = object larger than what was read |
-| `presign-download` | `key` | `{ key, url, expires_at }` |
+| `presign-download` | `key`, `disposition?` (`attachment`, the default, or `inline`) | `{ key, url, expires_at }` — `attachment`: a download link (`S3_BROWSER_DOWNLOAD_TTL_SECONDS`, default 900). `inline`: a link that serves the object as `text/plain; charset=utf-8` with `Content-Disposition: inline`, valid `S3_BROWSER_VIEW_TTL_SECONDS` (default 60); the browser fetches it straight from S3, the worker never reads the file. Both are capped at a role session's end |
 | `presign-upload` | `key` (as above, and no `${filename}`), `size` (bytes, integer ≥ 0), `content_type?` (a media type without parameters) | `{ key, url, fields, expires_at }` — an S3 presigned POST: send each of `fields` (`[{ name, value }]`) and then the file as `file`, as `multipart/form-data`, to `url`. `fields` is a list because the catalog rewrites the keys of an output to snake_case, and S3 takes the names literally (`X-Amz-Signature`) |
 | `delete-object` | `key` | `{ key }` |
 
+The worker never handles file content: there is no action that reads an object. The browser reads and writes S3
+directly through the signed links, and to show a file it asks `presign-download` with `disposition: inline`. The catalog
+stores every action's full output, so a signed link ends up in the execution record, which anyone with `entity:read` on
+the application can read while the specification grants `read`/`list` to `*`; that is why the links are short-lived
+(`inline`: 60 s). Closing the history to people means dropping `read`/`list` from the `*` grant and granting them to the
+agent's own principal, which the worker needs to read the execution (step 1). The specification file cannot name it: a
+`user` or `role` principal carries an id that differs per organization, so it is set per installation, not in this file.
+
 - Authorization block (`schema.authorization.entities.grants`): principal `{type:"*"}` gets
-  `read`, `list` and the seven actions. Who may change a link's bucket is not decided here: `delete-object` and
+  `read`, `list` and the six actions. Who may change a link's bucket is not decided here: `delete-object` and
   `presign-upload` need `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
   `S3_BROWSER_ALLOW_WRITES=1` on the worker.
 
@@ -126,7 +133,7 @@ Worker codes in link mode (CODE → status):
 3. Ownership: `link.entity_nrn === <verified entity NRN>` or starts with `<verified entity NRN> + ":"`. Otherwise `LINK_NOT_OWNED`.
 3b. Permission of the user who ran the execution (`record.actor_id`), once per request, with the agent's key and never
    cached: `GET /authz?nrn=<link.entity_nrn>&action=<permission>&user_id=<actor_id>`, where the permission is
-   `service:link:read` for `list-objects`, `head-object`, `read-object` and `presign-download`, and `service:link:write`
+   `service:link:read` for `list-objects`, `search-objects`, `head-object` and `presign-download`, and `service:link:write`
    for `delete-object` and `presign-upload`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
    but `{ "granted": true }` → `LINK_ACCESS_DENIED`; a check that fails → `PERMISSION_CHECK_FAILED`. It runs before
    step 4, so a user without the permission learns nothing about the link's state.

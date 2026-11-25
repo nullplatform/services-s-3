@@ -82,9 +82,8 @@ The document is `{"notification": <catalog context>}`; the route takes it when `
 Actions (all `sync`, every input has `link_id`, nothing else allowed; the specification declares the inputs in camelCase
 because the catalog camelCases the request body before validating it, and the execution record comes back snake_case):
 `list-objects` (`prefix?`, `token?`, `limit?`), `search-objects` (`prefix?`, `query`, `token?`, `limit?`: the files
-and folders under the prefix, at any depth, whose name contains the query), `head-object` (`key`), `read-object` (`key`,
-`max_bytes?` 1–262144, default 262144: the first bytes as UTF-8 with `truncated` and the total
-`size`), `presign-download` (`key`), `presign-upload` (`key`, `size` in bytes, `content_type?`: a form that uploads one
+and folders under the prefix, at any depth, whose name contains the query), `head-object` (`key`), `presign-download` (`key`,
+`disposition?` `attachment` (default) or `inline`: a short-lived link that shows the file as plain text), `presign-upload` (`key`, `size` in bytes, `content_type?`: a form that uploads one
 file of exactly that size to exactly that key), `delete-object` (`key`). Outputs in [`catalog/LINK_MODE.md`](catalog/LINK_MODE.md).
 
 Checks, in order (all mandatory):
@@ -143,9 +142,12 @@ never leaves the worker. A role link's presigned URL (and its `expires_at`) is c
 900 s session, even with a longer `S3_BROWSER_DOWNLOAD_TTL_SECONDS`. Each request builds its own S3 client with the link's
 keys or session; nothing built with them is cached or shared, and there is no S3 client with the worker's identity.
 
+The worker never reads a file's content: it only signs links (`presign-download`, `presign-upload`) and the browser talks to S3
+directly. Signed links are action outputs, which the catalog stores in the execution record; keep them short-lived.
+
 Files in [`catalog/`](catalog/): [`s3_browser.specification.json`](catalog/s3_browser.specification.json)
-(entity `application_id` + `nrn`, the seven actions, all granted to everyone),
-[`s3_browser.executors.json`](catalog/s3_browser.executors.json) (seven `notification` executors,
+(entity `application_id` + `nrn`, the six actions, all granted to everyone),
+[`s3_browser.executors.json`](catalog/s3_browser.executors.json) (six `notification` executors,
 15 s), [`s3_browser.channel.example.json`](catalog/s3_browser.channel.example.json) (agent channel).
 The catalog's gate (`entity:write` on the application) and these grants decide who may run an action at all. Who may
 read or change one link is the worker's: the link's own permission (check 5: `service:link:write` to delete or upload),
@@ -169,7 +171,7 @@ NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":
 NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs
 ```
 
-It creates or updates the specification (`--allow-destructive` when an update narrows it), the seven executors and the
+It creates or updates the specification (`--allow-destructive` when an update narrows it), the six executors and the
 agent channel (`--skip-channel`), and seeds one `s3_browser` entity per application with a link to an `aws-s3-bucket*`
 service (`--skip-seed`; 409 = already there). The channel runs `package-exec` of the `aws-s3-bucket` package (this
 image) on the agents `AGENT_SELECTOR` names: the same `tags_selectors` as the service's own channel, and the package must
@@ -201,6 +203,7 @@ against a real API.
 | `S3_BROWSER_SPECIFICATIONS` | service specifications a link's service may be, comma list, trailing `*` = prefix; default `aws-s3-bucket*` |
 | `S3_BROWSER_ALLOW_WRITES` | `1` enables `delete-object` and `presign-upload` |
 | `S3_BROWSER_DOWNLOAD_TTL_SECONDS` | presigned URL lifetime, default 900 (a role link's is capped at its session) |
+| `S3_BROWSER_VIEW_TTL_SECONDS` | lifetime of a `presign-download` with `disposition: inline`, default 60 (capped the same way) |
 | `S3_BROWSER_UPLOAD_TTL_SECONDS` | upload form lifetime, default 300 (a role link's is capped at its session) |
 | `S3_BROWSER_UPLOAD_MAX_BYTES` | largest file an upload form is signed for, default 104857600 (100 MiB) |
 | `S3_BROWSER_SEARCH_BUDGET_MS` | how long one `search-objects` call keeps asking S3 for more keys before it answers with what it found, default 8000 (the executor waits 15 s) |

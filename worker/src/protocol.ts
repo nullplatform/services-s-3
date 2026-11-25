@@ -11,14 +11,16 @@
  * Every other payload belongs to the bash service and never reaches this module.
  */
 /** The operations of the `s3_browser` specification. */
-export const LINK_ACTIONS = ["list-objects", "search-objects", "head-object", "read-object", "presign-download", "presign-upload", "delete-object"] as const;
+export const LINK_ACTIONS = ["list-objects", "search-objects", "head-object", "presign-download", "presign-upload", "delete-object"] as const;
 export type Action = (typeof LINK_ACTIONS)[number];
 
 /** Default slug of the per-application catalog specification that selects link mode. */
 export const DEFAULT_LINK_SPECIFICATION = "s3_browser";
 /** The catalog's notification action for an action execution. */
 export const CATALOG_ACTION = "catalog:action:create";
-export const READ_MAX_BYTES = 262_144;
+/** How a presign-download link tells the browser to treat the file: save it, or show it as plain text. */
+export const DISPOSITIONS = ["attachment", "inline"] as const;
+export type Disposition = (typeof DISPOSITIONS)[number];
 /** The longest text `search-objects` looks for in a name. */
 export const QUERY_MAX = 128;
 
@@ -32,8 +34,8 @@ export interface Command {
   key?: string;
   /** search-objects only: the text a file's or folder's name must contain, whatever its case. */
   query?: string;
-  /** read-object only: how many bytes to read from the start of the object. */
-  max_bytes?: number;
+  /** presign-download only: `attachment` (the default) or `inline`, a short-lived link that shows the file as plain text. */
+  disposition?: Disposition;
   /** presign-upload only: the exact size in bytes of the file the upload is for. */
   size?: number;
   /** presign-upload only: the content type S3 stores for the object. */
@@ -69,8 +71,7 @@ export const LINK_INPUT_FIELDS: Record<string, string[]> = {
   "list-objects": ["link_id", "prefix", "token", "limit"],
   "search-objects": ["link_id", "prefix", "query", "token", "limit"],
   "head-object": ["link_id", "key"],
-  "read-object": ["link_id", "key", "max_bytes"],
-  "presign-download": ["link_id", "key"],
+  "presign-download": ["link_id", "key", "disposition"],
   "presign-upload": ["link_id", "key", "size", "content_type"],
   "delete-object": ["link_id", "key"],
 };
@@ -152,10 +153,10 @@ export function parseLinkOperation(operation: unknown, rawInput: unknown): Comma
     if (contentType !== undefined && (typeof contentType !== "string" || !CONTENT_TYPE.test(contentType))) throw new CommandError("content_type must be a media type such as text/csv", 400);
     command.content_type = contentType;
   }
-  if (action === "read-object") {
-    const maxBytes = body.max_bytes === undefined || body.max_bytes === null ? READ_MAX_BYTES : body.max_bytes;
-    if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > READ_MAX_BYTES) throw new CommandError(`max_bytes must be an integer between 1 and ${READ_MAX_BYTES}`, 400);
-    command.max_bytes = maxBytes;
+  if (action === "presign-download") {
+    const disposition = body.disposition === undefined ? "attachment" : body.disposition;
+    if (!(DISPOSITIONS as readonly unknown[]).includes(disposition)) throw new CommandError(`disposition must be one of ${DISPOSITIONS.join(", ")}`, 400);
+    command.disposition = disposition as Disposition;
   }
   command.link = { execution_id: "", specification_slug: "", link_id: linkId, entity_nrn: "", actor_id: "" };
   return command;
