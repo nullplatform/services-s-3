@@ -12,7 +12,7 @@ import { type ObjectStore, type StaticCredentials, StoreError, type Target, reda
 export interface HandlerConfig {
   /** Accepted specification slugs; a trailing `*` matches a prefix. */
   specifications: string[];
-  /** `delete-object` and `presign-upload` only when true. */
+  /** `presign-upload` only when true. */
   allowWrites: boolean;
   /** The largest file `presign-upload` signs a form for, in bytes (DEFAULT_UPLOAD_MAX_BYTES when unset). */
   uploadMaxBytes?: number;
@@ -23,7 +23,7 @@ export interface HandlerConfig {
    * `entity_nrn` yet, take the entity from the envelope's application id. Off by default.
    */
   unverifiedEntityBinding?: boolean;
-  /** Role links: the account (and partition) their IAM roles live in. Unset refuses role links. */
+  /** The account (and partition) the links' IAM roles live in. Unset refuses every request. */
   linkRole?: LinkRoleConfig;
   /** Where the fallback's warning and STS failures go (stderr by default). */
   warn?: (message: string) => void;
@@ -45,7 +45,7 @@ export function normalisePathPrefix(value: unknown): string {
 
 const WRITE_LEVELS = new Set(["write", "read-write"]);
 /** The operations that change the bucket: off unless the worker allows writes, and only on a link that can write. */
-const WRITE_ACTIONS: ReadonlySet<Command["action"]> = new Set(["delete-object", "presign-upload"]);
+const WRITE_ACTIONS: ReadonlySet<Command["action"]> = new Set(["presign-upload"]);
 /** 100 MiB: one form, one request; larger files need a multipart upload, which this worker does not sign. */
 export const DEFAULT_UPLOAD_MAX_BYTES = 104_857_600;
 
@@ -59,7 +59,6 @@ export const LINK_PERMISSION: Record<Command["action"], string> = {
   "head-object": "service:link:read",
   "presign-download": "service:link:read",
   "presign-upload": "service:link:write",
-  "delete-object": "service:link:write",
 };
 
 /** An s3_browser entity lives exactly at an application, never at a namespace or above. */
@@ -155,9 +154,6 @@ export async function verifyExecution(platform: Platform, command: Command, conf
   return verified;
 }
 
-/** A masked value means the read did not include secrets; using it would only fail at AWS. */
-const MASKED = /^\*+$/;
-
 interface LinkScope {
   target: Target;
   pathPrefix: string;
@@ -196,7 +192,7 @@ function checkOpen(link: Link, linkId: string): Link {
 
 /**
  * The bucket from the link's service only; reads and writes stay under the link's `path_prefix`;
- * deletes need a write access level. The same for key and role links.
+ * uploads need a write access level.
  */
 async function scopeOf(platform: Platform, link: Link, command: Command, config: HandlerConfig): Promise<{ bucket: string; region: string | undefined; pathPrefix: string }> {
   const linkId = command.link!.link_id;
@@ -233,16 +229,19 @@ function assumeRoleError(error: unknown, linkId: string, roleArn: string, warn: 
 }
 
 /**
- * A role link: no secret is read. The role is rebuilt from the link id in the configured account,
- * never taken from the link (a `role_arn` that differs is refused), and assumed only after every
- * link check passed, for one short session.
+ * The link's role, never its keys: the application's access key is not read, and the worker has no
+ * way to use it. The role is rebuilt from the link id in the configured account, never taken from
+ * the link (a recorded `role_arn` that differs is refused), and assumed only after every link
+ * check passed, for one short session. A link with the explorer on but no recorded role (created
+ * before the service gave links one) is refused: it must be updated so the service creates it.
  */
-async function resolveRoleLink(platform: Platform, command: Command, config: HandlerConfig, secrets: string[], assumeRole: AssumeRole, link: Link): Promise<LinkScope> {
+async function resolveRole(platform: Platform, command: Command, config: HandlerConfig, secrets: string[], assumeRole: AssumeRole, link: Link): Promise<LinkScope> {
   const { link_id: linkId, execution_id: executionId } = command.link!;
-  const roleArn = linkRoleArn(linkId, config.linkRole);
-  if (!roleArn) throw new CommandError(`link ${linkId} uses an IAM role, but this worker has no valid link role account (S3_BROWSER_LINK_ROLE_ACCOUNT_ID)`, 409, "LINK_ROLE_NOT_CONFIGURED");
   const recorded = link.attributes?.role_arn;
-  if (recorded !== undefined && recorded !== null && recorded !== "" && recorded !== roleArn) throw new CommandError(`link ${linkId} records role ${String(recorded)}, not ${roleArn}`, 403, "LINK_ROLE_MISMATCH");
+  if (typeof recorded !== "string" || !recorded) throw new CommandError(`link ${linkId} has no role for the S3 browser yet: update the link (for example turn the S3 browser off and on again) so the service creates it`, 409, "LINK_ROLE_MISSING");
+  const roleArn = linkRoleArn(linkId, config.linkRole);
+  if (!roleArn) throw new CommandError(`link ${linkId} is browsed through an IAM role, but this worker has no valid link role account (S3_BROWSER_LINK_ROLE_ACCOUNT_ID)`, 409, "LINK_ROLE_NOT_CONFIGURED");
+  if (recorded !== roleArn) throw new CommandError(`link ${linkId} records role ${recorded}, not ${roleArn}`, 403, "LINK_ROLE_MISMATCH");
   const { bucket, region, pathPrefix } = await scopeOf(platform, link, command, config);
   let credentials: StaticCredentials;
   const requestedAt = Date.now();
@@ -261,31 +260,17 @@ async function resolveRoleLink(platform: Platform, command: Command, config: Han
 /**
  * Link mode, in the contract's order: the link must exist and belong to the entity's application;
  * the user who ran the execution must hold the link's permission for the operation; the link must
- * be active, with the S3 browser enabled, and with keys (or, for a role link, the role assumable);
- * the bucket comes only from its service; reads and writes stay under its `path_prefix`; deletes
- * need a write access level.
+ * be active, with the S3 browser enabled and its role recorded; the bucket comes only from its
+ * service; reads and writes stay under its `path_prefix`; uploads need a write access level; and
+ * the role must be assumable. The link is read once and without secrets.
  */
 async function resolveLink(platform: Platform, command: Command, config: HandlerConfig, secrets: string[], assumeRole: AssumeRole): Promise<LinkScope> {
   const { link_id: linkId, entity_nrn: entityNrn } = command.link!;
-  // Without secrets first: a role link's are never read, and a refused link costs no secret read.
-  const plain = checkOwned(await platform.getLink(linkId, { secrets: false }), linkId, entityNrn);
+  const link = checkOwned(await platform.getLink(linkId), linkId, entityNrn);
   // The user's permission before the link's state: without it, nothing about the link is told.
-  await checkPermission(platform, command, plain);
-  checkOpen(plain, linkId);
-  if (plain.attributes?.credentials === "role") return resolveRoleLink(platform, command, config, secrets, assumeRole, plain);
-  const link = checkOpen(checkOwned(await platform.getLink(linkId), linkId, entityNrn), linkId);
-  const attributes = link.attributes ?? {};
-  const accessKeyId = attributes.aws_access_key_id;
-  const secretAccessKey = attributes.aws_secret_access_key;
-  // Known to the caller's scrubber from here on, whatever fails next.
-  for (const value of [accessKeyId, secretAccessKey]) if (typeof value === "string" && value) secrets.push(value);
-  // The services API masks secret attributes as null when the read did not include them; the
-  // (non-secret) key id is still there. That is a worker misconfiguration, not a pending link.
-  const masked = typeof accessKeyId === "string" && accessKeyId && secretAccessKey === null;
-  if (!masked && (typeof accessKeyId !== "string" || !accessKeyId || typeof secretAccessKey !== "string" || !secretAccessKey)) throw new CommandError(`link ${linkId} has no access keys yet`, 409, "LINK_NOT_READY");
-  if (masked || MASKED.test(String(accessKeyId)) || MASKED.test(String(secretAccessKey))) throw new PlatformError(`link ${linkId} came back with masked keys; the agent's API key needs the permission to read link secrets`, 500, "PLATFORM");
-  const { bucket, region, pathPrefix } = await scopeOf(platform, link, command, config);
-  return { target: { bucket, region, credentials: { accessKeyId: accessKeyId as string, secretAccessKey: secretAccessKey as string } }, pathPrefix };
+  await checkPermission(platform, command, link);
+  checkOpen(link, linkId);
+  return resolveRole(platform, command, config, secrets, assumeRole, link);
 }
 
 /** The same error with every secret removed from its message. */
@@ -315,15 +300,13 @@ async function runOnTarget(store: ObjectStore, command: Command, target: Target)
       return store.presign(target, command.key!, command.disposition);
     case "presign-upload":
       return presignUpload(store, command, target);
-    case "delete-object":
-      return store.remove(target, command.key!);
   }
 }
 
 export function createHandler({ platform, store, config, assumeRole = createAssumeRole() }: { platform: Platform; store: ObjectStore; config: HandlerConfig; assumeRole?: AssumeRole }): Handler {
   const replay = createReplayGuard(config.replay);
   return async (command) => {
-    // Gate writes before any lookup: a refused delete or upload costs no platform call.
+    // Gate writes before any lookup: a refused upload costs no platform call.
     if (WRITE_ACTIONS.has(command.action) && !config.allowWrites) throw new CommandError("writes are disabled on this worker (S3_BROWSER_ALLOW_WRITES=1 enables them)", 405, "WRITES_DISABLED");
     // Never act on the payload alone: everything below uses the catalog-verified command.
     const executionId = command.link!.execution_id;

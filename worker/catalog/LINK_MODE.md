@@ -1,9 +1,14 @@
 # s3_browser link mode — shared contract (worker ↔ plugin)
 
 Goal: a developer browses the S3 buckets linked to their application from a UI plugin. Every bucket
-operation is a synchronous catalog action. The worker opens S3 with the **link's own IAM keys**
-(the key the app already has) or, for a link created with `credentials: role`, a short session of the
-**link's own IAM role**; never with the agent's role.
+operation is a synchronous catalog action. The worker always opens S3 with a short session of the
+**link's own IAM role**, which the aws-s3-bucket service creates only while the link's `browser_enabled` is true. It never
+uses the application's access key (it does not read it) and never the agent's own role.
+
+**Installation prerequisite.** The worker must run with an AWS identity that is listed in the service's
+`link_role_trusted_principals` (or `LINK_ROLE_TRUSTED_PRINCIPALS` on the agent), must be allowed `sts:AssumeRole` on
+`role/np-s3-*`, and needs `S3_BROWSER_LINK_ROLE_ACCOUNT_ID`. With the key path gone, an installation without that
+cannot browse any bucket.
 
 ## Chain
 
@@ -17,7 +22,7 @@ service) with the document `{"notification": <context>}`; its `link-mode` route 
 
 Who may browse a link, all of it mandatory: the catalog's gate and grant above (today `entity:write` on the application
 and the specification's `action:<slug>` grant), then, in the worker, the user's own services permission on the link
-(`service:link:read`, or `service:link:write` to delete; step 3b) and the link's `browser_enabled` switch (step 4).
+(`service:link:read`, or `service:link:write` to upload; step 3b) and the link's `browser_enabled` switch (step 4).
 
 Catalog context the worker receives (catalog-entities-api `ActionContext`):
 `{ id, action: "catalog:action:create", slug: "<action slug>", input: {...}, status, specification: { id, slug: "s3_browser" }, entity: {...}, entity_nrn: "<entity NRN>", user: { id } }`.
@@ -41,7 +46,10 @@ Catalog context the worker receives (catalog-entities-api `ActionContext`):
 | `head-object` | `key` (relative, no leading/trailing `/`, ≤1024) | `{ key, size, content_type?, last_modified, etag?, storage_class?, metadata }` |
 | `presign-download` | `key`, `disposition?` (`attachment`, the default, or `inline`) | `{ key, url, expires_at }` — `attachment`: a download link (`S3_BROWSER_DOWNLOAD_TTL_SECONDS`, default 900). `inline`: a link that serves the object as `text/plain; charset=utf-8` with `Content-Disposition: inline`, valid `S3_BROWSER_VIEW_TTL_SECONDS` (default 60); the browser fetches it straight from S3, the worker never reads the file. Both are capped at a role session's end |
 | `presign-upload` | `key` (as above, and no `${filename}`), `size` (bytes, integer ≥ 0), `content_type?` (a media type without parameters) | `{ key, url, fields, expires_at }` — an S3 presigned POST: send each of `fields` (`[{ name, value }]`) and then the file as `file`, as `multipart/form-data`, to `url`. `fields` is a list because the catalog rewrites the keys of an output to snake_case, and S3 takes the names literally (`X-Amz-Signature`) |
-| `delete-object` | `key` | `{ key }` |
+
+There is no delete here: deleting an object is the aws-s3-bucket link action `delete-object`, which runs the link's
+approval (and its checklist) before the service's bash deletes. A catalog action would skip that approval, so the
+specification has none and the worker refuses the slug (`UNKNOWN_ACTION`).
 
 The worker never handles file content: there is no action that reads an object. The browser reads and writes S3
 directly through the signed links, and to show a file it asks `presign-download` with `disposition: inline`. The catalog
@@ -52,8 +60,7 @@ agent's own principal, which the worker needs to read the execution (step 1). Th
 `user` or `role` principal carries an id that differs per organization, so it is set per installation, not in this file.
 
 - Authorization block (`schema.authorization.entities.grants`): principal `{type:"*"}` gets
-  `read`, `list` and the six actions. Who may change a link's bucket is not decided here: `delete-object` and
-  `presign-upload` need `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
+  `read`, `list` and the five actions. Who may write to a link's bucket is not decided here: `presign-upload` needs `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
   `S3_BROWSER_ALLOW_WRITES=1` on the worker.
 
 ## Errors
@@ -74,18 +81,19 @@ Worker codes in link mode (CODE → status):
 | `EXECUTION_NOT_VERIFIED` | 403 | no pending execution with that id and action in the catalog, invalid recorded input, no user on the record, `entity_nrn` missing (flag off) or not exactly an application NRN, a replayed execution id, or a catalog read failed |
 | `LINK_NOT_FOUND` | 404 | `GET /link/{id}` is 404 |
 | `LINK_NOT_OWNED` | 403 | link.entity_nrn is neither the entity NRN nor under it (`entity_nrn + ":"` prefix) |
-| `LINK_ACCESS_DENIED` | 403 | authz does not grant the user who ran the execution `service:link:read` (reads) or `service:link:write` (delete) at `link.entity_nrn` |
-| `LINK_NOT_READY` | 409 | link status not `active`, or (key link) no `aws_access_key_id`/`aws_secret_access_key` |
+| `LINK_ACCESS_DENIED` | 403 | authz does not grant the user who ran the execution `service:link:read` (reads) or `service:link:write` (upload) at `link.entity_nrn` |
+| `LINK_NOT_READY` | 409 | link status not `active`, or the link has no service |
 | `LINK_BROWSER_DISABLED` | 403 | the link's `browser_enabled` attribute is not `true` (off, absent, or any other value) |
 | `PERMISSION_CHECK_FAILED` | 502 | the permission check could not be made (authz unreachable, or refusing the worker); a failed execution, nothing is opened |
-| `LINK_ROLE_NOT_CONFIGURED` | 409 | role link while `S3_BROWSER_LINK_ROLE_ACCOUNT_ID` is unset or not 12 digits (or `S3_BROWSER_LINK_ROLE_PARTITION` is invalid) |
-| `LINK_ROLE_MISMATCH` | 403 | role link whose `role_arn` attribute is not the ARN rebuilt from its id |
+| `LINK_ROLE_MISSING` | 409 | `browser_enabled` is true but the link records no `role_arn` (it was created before links had a role): update the link so the service creates it; the application's key is never a fallback |
+| `LINK_ROLE_NOT_CONFIGURED` | 409 | any link while `S3_BROWSER_LINK_ROLE_ACCOUNT_ID` is unset or not 12 digits (or `S3_BROWSER_LINK_ROLE_PARTITION` is invalid) |
+| `LINK_ROLE_MISMATCH` | 403 | link whose `role_arn` attribute is not the ARN rebuilt from its id |
 | `LINK_ROLE_DENIED` | 403 | STS `AssumeRole` on the rebuilt ARN answered AccessDenied (fixed message; STS's, which names the worker's identity, is only logged) |
 | `NOT_A_BUCKET` | 400 | the link's service specification does not match `S3_BROWSER_SPECIFICATIONS` |
 | `NO_BUCKET` | 409 | service has no `bucket_name` yet |
 | `OUTSIDE_PREFIX` | 403 | prefix/key outside the link's `path_prefix` |
-| `WRITE_NOT_ALLOWED` | 403 | `delete-object` or `presign-upload` on a link whose `access_level` is `read` |
-| `WRITES_DISABLED` | 405 | `delete-object` or `presign-upload` while `S3_BROWSER_ALLOW_WRITES` is not `1` |
+| `WRITE_NOT_ALLOWED` | 403 | `presign-upload` on a link whose `access_level` is `read` |
+| `WRITES_DISABLED` | 405 | `presign-upload` while `S3_BROWSER_ALLOW_WRITES` is not `1` |
 | `UPLOAD_TOO_LARGE` | 413 | `presign-upload` with a `size` over `S3_BROWSER_UPLOAD_MAX_BYTES` (default 104857600) |
 | `OBJECT_EXISTS` | 409 | `presign-upload` to a key that already holds an object |
 | S3 / STS error names (`AccessDenied`, `NoSuchKey`, `NotFound`, `NoSuchBucket`, `CredentialsProviderError`, …) | 403/404/500/502 | from AWS, as today (`StoreError`) |
@@ -97,7 +105,7 @@ Worker codes in link mode (CODE → status):
    (env, default `s3_browser`) and whose `notification.action` is `catalog:action:create`. Every other payload goes to the
    aws-s3-bucket bash entrypoint, which knows nothing of the S3 browser: the worker has no mode that opens S3 with its own
    AWS identity (the old direct command, service-action and `aws-s3-bucket` catalog modes are gone), and its S3 store
-   refuses a request without the link's credentials.
+   refuses a request without a link role's session credentials.
 1b. **The envelope is not trusted.** Anyone with `agent:run_command` can send a catalog-shaped envelope through
    `POST /controlplane/agent_command`. Link mode takes only `notification.id` and `notification.slug` from it. Before anything
    else (after the `WRITES_DISABLED` gate) the worker reads, with the agent's key and no caching,
@@ -120,45 +128,42 @@ Worker codes in link mode (CODE → status):
    `agent:run_command` can pair a real pending execution (of an entity they can write) with another application's id.
    Keep the flag off. This is not the only way such a caller reaches another application's bucket: the bash route
    trusts its envelope too (see Residual risks).
-2. Read the link with the agent's API key, first **without** secret attributes: `GET /link/{link_id}`. Steps 3, 3b and 4
-   run on that read. Then, by the link's `credentials` attribute:
-   - `access-key` or absent: read it again including secret attributes
-     (query `include_secret_attributes=true`; needs `service:link:read-secrets` on the agent key — both confirmed in
-     main-service-api source) and run steps 3 and 4 again on that read; the keys must be present.
-   - `role`: no secret is read. The role ARN is **rebuilt from the link id**, never taken from the link:
-     `arn:${S3_BROWSER_LINK_ROLE_PARTITION:-aws}:iam::${S3_BROWSER_LINK_ROLE_ACCOUNT_ID}:role/np-s3-<first 16 chars of the
-     link id without dashes, lowercased>` (the aws-s3-bucket service's derivation). No valid account → `LINK_ROLE_NOT_CONFIGURED`;
-     a `role_arn` attribute that differs → `LINK_ROLE_MISMATCH`.
-   Never cache link reads beyond the request; never log or return the keys.
+2. Read the link with the agent's API key, **without** secret attributes: `GET /link/{link_id}`, once. The worker
+   never asks for secret attributes, so the agent's key does not need `service:link:read-secrets` (earlier versions
+   did, to read the application's key). The role ARN is **rebuilt from the link id**, never taken from the link:
+   `arn:${S3_BROWSER_LINK_ROLE_PARTITION:-aws}:iam::${S3_BROWSER_LINK_ROLE_ACCOUNT_ID}:role/np-s3-<first 16 chars of the
+   link id without dashes, lowercased>` (the aws-s3-bucket service's derivation). No valid account → `LINK_ROLE_NOT_CONFIGURED`;
+   a `role_arn` attribute that differs → `LINK_ROLE_MISMATCH`; no `role_arn` recorded while the explorer is on →
+   `LINK_ROLE_MISSING`. Never cache link reads beyond the request.
 3. Ownership: `link.entity_nrn === <verified entity NRN>` or starts with `<verified entity NRN> + ":"`. Otherwise `LINK_NOT_OWNED`.
 3b. Permission of the user who ran the execution (`record.actor_id`), once per request, with the agent's key and never
    cached: `GET /authz?nrn=<link.entity_nrn>&action=<permission>&user_id=<actor_id>`, where the permission is
    `service:link:read` for `list-objects`, `search-objects`, `head-object` and `presign-download`, and `service:link:write`
-   for `delete-object` and `presign-upload`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
+   for `presign-upload`: the same actions, at the same NRN, the services API asks for to read or change the link. Anything
    but `{ "granted": true }` → `LINK_ACCESS_DENIED`; a check that fails → `PERMISSION_CHECK_FAILED`. It runs before
    step 4, so a user without the permission learns nothing about the link's state.
 4. `link.status` must be `active` (`LINK_NOT_READY`), and `link.attributes.browser_enabled` must be `true`: off, absent
    or any other value → `LINK_BROWSER_DISABLED`. It is the link's own switch (aws-s3-bucket link specification, default
-   `false`), set by whoever creates or edits the link; links created before it existed read as off.
+   `false`), set by whoever creates or edits the link; links created before it existed read as off. The service creates
+   the link's role when it is turned on and removes it when it is turned off, and records the role in `role_arn`.
 5. Bucket and region come **only** from the link's service (`GET /service/{link.service_id}` → spec matches
    `S3_BROWSER_SPECIFICATIONS`, `attributes.bucket_name`, `attributes.bucket_region`). Never from the input.
 6. `path_prefix` (link attribute, may be empty): normalise to end with `/` when non-empty. list with empty
    prefix → list at `path_prefix`; any prefix/key not starting with it → `OUTSIDE_PREFIX`.
-7. `access_level` (`read|write|read-write`): `delete-object` and `presign-upload` need `write` or `read-write` (else
+7. `access_level` (`read|write|read-write`): `presign-upload` needs `write` or `read-write` (else
    `WRITE_NOT_ALLOWED`); `WRITES_DISABLED` still applies first. Reads are left to AWS (the `write` level has no GetObject).
 7b. `presign-upload`: a `size` over `S3_BROWSER_UPLOAD_MAX_BYTES` is refused before the link is read (`UPLOAD_TOO_LARGE`).
    The key must hold no object (`OBJECT_EXISTS`; asked with a one-key listing, which every access level allows), so an
    upload never replaces a file; between that check and the upload another writer can still create the key. The form is
-   an S3 presigned POST signed with the link's credentials, valid `S3_BROWSER_UPLOAD_TTL_SECONDS` (default 300; a role
-   link's is capped at its session), whose policy pins the bucket, the exact key, `content-length-range [size, size]`
+   an S3 presigned POST signed with the role session, valid `S3_BROWSER_UPLOAD_TTL_SECONDS` (default 300; capped at its session), whose policy pins the bucket, the exact key, `content-length-range [size, size]`
    and, when given, the `Content-Type`. The file goes from the browser to S3; it never passes through the catalog or
    the worker.
-8. S3 client built with the link's static credentials, a fresh client per request (never cached, never shared); a
+8. S3 client built with the role session's credentials, a fresh client per request (never cached, never shared); a
    request without them is refused, so S3 is never opened with the worker's identity.
-9. Role links: only after steps 3–7 pass (3b included), STS `AssumeRole` on the rebuilt ARN with the worker's own identity (the
+9. After steps 3–7 pass (3b included), STS `AssumeRole` on the rebuilt ARN with the worker's own identity (the
    bounded default chain), `RoleSessionName` `s3-browser-<execution id>` (64 chars max, `[\w+=,.@-]`),
    `DurationSeconds` 900, in the bucket's region; AccessDenied → `LINK_ROLE_DENIED`. The session's credentials are
-   scrubbed like the keys and used as in step 8. The link's role trusts only the exact role ARNs in the service's
+   scrubbed from every result and used as in step 8. The link's role trusts only the exact role ARNs in the service's
    `link_role_trusted_principals`, so the worker's role must be listed there and allowed `sts:AssumeRole` on
    `role/np-s3-*`.
 
@@ -173,8 +178,7 @@ Worker codes in link mode (CODE → status):
   `failed` is `not_sync`.
 - `failed` + `executor_error` + message `^([A-Za-z_]+): ` → a **domain** error with that CODE (normalised to the
   plugin's message codes); other failures → platform errors.
-- Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null,
-  `delete-object` returns `{ key }`).
+- Input names follow this contract (`token`, `limit`, `max_bytes`); outputs as above (`next_token` may be null).
 - A link whose `browser_enabled` attribute is not `true` is listed as "Not enabled" and is not opened: the plugin says
   it is turned on by editing the link, and does not call the worker for it.
 
@@ -198,22 +202,22 @@ the sync answer is recorded.
   catalog status transition the worker could make atomically (e.g. pending → running), which catalog-entities-api does
   not offer today. The window is bounded by the execution's pending time (≤ the executor's `timeout_ms`) and to callers
   with `agent:run_command`.
-- **The agent's own identity.** STS `AssumeRole` for role links is the only AWS call made with the worker's identity; S3
-  is always opened with the link's keys or role session, and a payload that is not a catalog execution of `s3_browser`
+- **The agent's own identity.** STS `AssumeRole` is the only AWS call made with the worker's identity; S3
+  is always opened with the link's role session, and a payload that is not a catalog execution of `s3_browser`
   goes to the bash service, never to S3.
 - **`S3_BROWSER_UNVERIFIED_ENTITY_BINDING=1`** (step 1c) unbinds the entity from the execution while it is on.
 - **The bash route trusts the whole envelope.** This is worker-bridge's behaviour, unchanged here: every payload that is
   not link mode reaches the aws-s3-bucket entrypoint as is, and the service reads the service and link from it, not from
   the platform. `build_permissions_context` takes `bucket_name` and `bucket_region` from the envelope's
   `service.attributes`, and the permissions module builds the policy from that name. So a caller with
-  `agent:run_command` can send a link action naming its own link and another application's bucket: its IAM user or role
-  policy is re-pointed at that bucket, and `link_access_key` keeps the link's existing key, so the app's current
+  `agent:run_command` can send a link action naming its own link and another application's bucket: its IAM user and role
+  policies are re-pointed at that bucket, and `link_access_key` keeps the link's existing key, so the app's current
   credentials reach it. Treat `agent:run_command` on this agent as full control of every service and link it manages.
   Not verified: whether `np service-action exec --live-report` refuses an action id the platform does not know before the
   workflow runs. Closing it needs the service to re-read what it acts on (e.g. `np service read --id` for the bucket),
   a change to aws-s3-bucket, not to this worker.
-- **Presigned URLs** carry the link's access key id in `X-Amz-Credential` (SigV4 by design) and, for a role link, the
-  session token in `X-Amz-Security-Token`; the secret never leaves the worker. A role link's URL (and `expires_at`)
+- **Presigned URLs** carry the role session's access key id in `X-Amz-Credential` (SigV4 by design) and the
+  session token in `X-Amz-Security-Token`; the secret never leaves the worker. A URL (and `expires_at`)
   is capped at the end of its 900 s session. The same holds for an upload form's `fields`. Both stay in the catalog's
   execution record after they expire: whoever reads the record within the form's lifetime can upload that one file.
 - **The permission check leans on authz answering about another user.** `GET /authz?nrn=&action=&user_id=` answers any
@@ -225,7 +229,7 @@ the sync answer is recorded.
 - **The catalog's gate is still `entity:write`.** The specification is installed per organization, and only a global
   specification may declare another gate (`authorization.platform`), so a user needs both `entity:write` on the
   application and the link's permission.
-- **Role links trust the worker's role, not the request.** Any process holding the worker's AWS identity can assume
+- **The links' roles trust the worker's role, not the request.** Any process holding the worker's AWS identity can assume
   every link role in the account; the link checks above are what bind a request to one link.
 
 ## Verified ordering
@@ -236,12 +240,10 @@ as `invalid_output`. Output schemas therefore describe only the success shape.
 
 ## Names: confirmed and still to confirm in e2e
 
-- Confirmed in main-service-api source: the query `include_secret_attributes=true` on `GET /link/{id}` (the controller reads
-  `includeSecretAttributes`) and the permission `service:link:read-secrets` (`LinkInstanceActions.READ_SECRETS`). Without
-  the query the services API masks the secret as `null`; the worker reports that as a `PLATFORM` failure. The query stays
-  configurable (`S3_BROWSER_LINK_SECRETS_QUERY`).
-- To confirm: that an agent API key can be granted `service:link:read-secrets` and catalog read on `s3_browser`
-  executions (and, only for the demo flag, entities) across the organization.
+- The worker no longer reads link secrets: no `include_secret_attributes` query and no `S3_BROWSER_LINK_SECRETS_QUERY`.
+  The agent's API key needs to read links (as the services API returns them by default) and catalog read on
+  `s3_browser` executions (and, only for the demo flag, entities) across the organization; not yet confirmed against a
+  deployed API.
 - To confirm once deployed: `entity_nrn` on the execution read.
 - Confirmed in catalog-entities-api source: `actor_id` on the execution record is the `user` of the token that ran the
   action and `actor_type` is always `user` (`BaseController.getActor`, `EntityService.executeAction`).

@@ -1,13 +1,13 @@
 /**
  * The services/s3 image's worker. The controlplane agent spawns the image and hands it every
  * command over gRPC; catalog executions of the `s3_browser` specification are the S3 browser's
- * (link mode, the link's own keys or role), and everything else runs the aws-s3-bucket bash
+ * (link mode, through the link's IAM role), and everything else runs the aws-s3-bucket bash
  * entrypoint as worker-bridge did (see plugin.ts). Nothing is exposed inbound.
  */
 import { main } from "@nullplatform/plugin";
 import { bridgeConfigOf, type Mirror } from "./bridge";
 import { createHandler } from "./handler";
-import { DEFAULT_LINK_SECRETS_QUERY, createPlatform } from "./platform";
+import { createPlatform } from "./platform";
 import { createWorker } from "./plugin";
 import { DEFAULT_LINK_SPECIFICATION } from "./protocol";
 import { createS3 } from "./s3";
@@ -39,7 +39,7 @@ const worker = createWorker({
   commandTypes: list(env.NP_COMMAND_TYPES, "scope,service,action"),
   link: {
     handler: createHandler({
-      platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY, linkSecretsQuery: env.S3_BROWSER_LINK_SECRETS_QUERY ?? DEFAULT_LINK_SECRETS_QUERY }),
+      platform: createPlatform({ apiUrl: env.NP_API_URL, apiKey: env.NP_API_KEY }),
       store: createS3({ defaultRegion: env.AWS_REGION, downloadTtlSeconds: Number(env.S3_BROWSER_DOWNLOAD_TTL_SECONDS ?? 900), viewTtlSeconds: Number(env.S3_BROWSER_VIEW_TTL_SECONDS ?? 60), uploadTtlSeconds: Number(env.S3_BROWSER_UPLOAD_TTL_SECONDS ?? 300), searchBudgetMs: Number(env.S3_BROWSER_SEARCH_BUDGET_MS ?? 8000) }),
       config: {
         specifications: list(env.S3_BROWSER_SPECIFICATIONS, "aws-s3-bucket*"),
@@ -47,7 +47,7 @@ const worker = createWorker({
         uploadMaxBytes: env.S3_BROWSER_UPLOAD_MAX_BYTES ? Number(env.S3_BROWSER_UPLOAD_MAX_BYTES) : undefined,
         // DEMO ONLY, never in a customer organization: see catalog/LINK_MODE.md.
         unverifiedEntityBinding: env.S3_BROWSER_UNVERIFIED_ENTITY_BINDING === "1",
-        // Role links: their roles live in this account; unset refuses them (LINK_ROLE_NOT_CONFIGURED).
+        // The links' roles live in this account; unset refuses every request (LINK_ROLE_NOT_CONFIGURED).
         linkRole: { accountId: env.S3_BROWSER_LINK_ROLE_ACCOUNT_ID, partition: env.S3_BROWSER_LINK_ROLE_PARTITION || "aws" },
       },
     }),

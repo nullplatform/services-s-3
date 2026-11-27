@@ -10,8 +10,11 @@
  * `link_id` included, from the catalog's record of the execution (see catalog/LINK_MODE.md).
  * Every other payload belongs to the bash service and never reaches this module.
  */
-/** The operations of the `s3_browser` specification. */
-export const LINK_ACTIONS = ["list-objects", "search-objects", "head-object", "presign-download", "presign-upload", "delete-object"] as const;
+/**
+ * The operations of the `s3_browser` specification. No delete: deleting is the service's
+ * `delete-object` link action, which goes through the link's approval; a catalog delete would skip it.
+ */
+export const LINK_ACTIONS = ["list-objects", "search-objects", "head-object", "presign-download", "presign-upload"] as const;
 export type Action = (typeof LINK_ACTIONS)[number];
 
 /** Default slug of the per-application catalog specification that selects link mode. */
@@ -73,7 +76,6 @@ export const LINK_INPUT_FIELDS: Record<string, string[]> = {
   "head-object": ["link_id", "key"],
   "presign-download": ["link_id", "key", "disposition"],
   "presign-upload": ["link_id", "key", "size", "content_type"],
-  "delete-object": ["link_id", "key"],
 };
 const LINK_ID = /^[A-Za-z0-9-]{1,64}$/;
 /** A media type without parameters, as a browser reports a file's: `text/csv`, `application/pdf`. */

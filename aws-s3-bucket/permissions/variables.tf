@@ -20,24 +20,19 @@ variable "bucket_name" {
 
 variable "principal_name" {
   type        = string
-  description = "Name of the link's IAM user or role (np-s3-<16 hex chars of the link ID>)"
+  description = "Name of the link's IAM user and of its role (np-s3-<16 hex chars of the link ID>)"
 }
 
-variable "credentials" {
-  type        = string
-  default     = "access-key"
-  description = "How the link authenticates: access-key (IAM user, key created by scripts/aws/link_access_key) or role (IAM role, no static key)"
-
-  validation {
-    condition     = contains(["access-key", "role"], var.credentials)
-    error_message = "credentials must be one of: access-key, role"
-  }
+variable "browser_role" {
+  type        = bool
+  default     = false
+  description = "Create the link's IAM role for the S3 browser (true while the link's browser_enabled is true). The application's IAM user exists either way"
 }
 
 variable "trusted_principal_arns" {
   type        = list(string)
   default     = []
-  description = "IAM role ARNs allowed to assume the link's role (credentials = role). The same list goes to every role link, so it should hold only the S3 browser worker's role"
+  description = "IAM role ARNs allowed to assume the link's role (browser_role). The same list goes to every link's role, so it should hold only the S3 browser worker's role"
 
   # Exact role ARNs only: an account root (arn:aws:iam::<account>:root) or a user would trust
   # far more than the one workload meant to assume the link's role.
@@ -72,7 +67,7 @@ variable "access_level" {
 variable "path_prefix" {
   type        = string
   default     = ""
-  description = "Optional S3 key prefix to scope the permissions (e.g., 'uploads/')"
+  description = "Optional S3 key prefix to scope the permissions (e.g., 'uploads/'); a folder: 'uploads' is read as 'uploads/'"
 
   # The prefix ends up inside the policy's resource ARN and s3:prefix condition, where * and ?
   # are wildcards and ${...} is a policy variable. Only those and control characters are

@@ -1,10 +1,9 @@
 # ---------------------------------------------------------------------------
-# IAM user per link (credentials = access-key)
+# IAM user per link: the application's identity (its access key is created by
+# scripts/aws/link_access_key, outside this state).
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_user" "link" {
-  count = var.credentials == "access-key" ? 1 : 0
-
   name                 = var.principal_name
   permissions_boundary = local.permissions_boundary
 
@@ -15,18 +14,6 @@ resource "aws_iam_user" "link" {
   lifecycle {
     ignore_changes = [permissions_boundary]
   }
-}
-
-# Links created before role mode hold the user and its policy without an index: move them
-# into the counted address instead of destroying and recreating them.
-moved {
-  from = aws_iam_user.link
-  to   = aws_iam_user.link[0]
-}
-
-moved {
-  from = aws_iam_user_policy.link
-  to   = aws_iam_user_policy.link[0]
 }
 
 # ---------------------------------------------------------------------------
@@ -58,11 +45,11 @@ data "aws_iam_policy_document" "link" {
     resources = [local.bucket_arn]
 
     dynamic "condition" {
-      for_each = var.path_prefix == "" ? [] : [1]
+      for_each = length(local.list_prefixes) == 0 ? [] : [1]
       content {
         test     = "StringLike"
         variable = "s3:prefix"
-        values   = ["${var.path_prefix}*", var.path_prefix]
+        values   = local.list_prefixes
       }
     }
   }
@@ -76,21 +63,20 @@ data "aws_iam_policy_document" "link" {
 }
 
 resource "aws_iam_user_policy" "link" {
-  count = var.credentials == "access-key" ? 1 : 0
-
   name   = "s3-access-${var.link_id}"
-  user   = aws_iam_user.link[0].name
+  user   = aws_iam_user.link.name
   policy = data.aws_iam_policy_document.link.json
 }
 
 # ---------------------------------------------------------------------------
-# IAM role per link (credentials = role): no static key. Only the exact role
-# ARNs in trusted_principal_arns (the S3 browser worker) can assume it,
-# and it carries the same bucket policy as the user would.
+# IAM role per link, for the S3 browser only, and only while the link's
+# browser_enabled is true (browser_role): a link whose explorer is off has no role.
+# Only the exact role ARNs in trusted_principal_arns (the S3 browser worker) can
+# assume it, never the application, and it carries the same bucket policy as the user.
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "link_trust" {
-  count = var.credentials == "role" ? 1 : 0
+  count = var.browser_role ? 1 : 0
 
   statement {
     sid     = "TrustedPrincipals"
@@ -105,7 +91,7 @@ data "aws_iam_policy_document" "link_trust" {
 }
 
 resource "aws_iam_role" "link" {
-  count = var.credentials == "role" ? 1 : 0
+  count = var.browser_role ? 1 : 0
 
   name                 = var.principal_name
   assume_role_policy   = data.aws_iam_policy_document.link_trust[0].json
@@ -120,13 +106,13 @@ resource "aws_iam_role" "link" {
 
     precondition {
       condition     = length(var.trusted_principal_arns) > 0
-      error_message = "credentials = role needs at least one trusted_principal_arns entry (LINK_ROLE_TRUSTED_PRINCIPALS / link_role_trusted_principals)."
+      error_message = "browser_role needs at least one trusted_principal_arns entry (LINK_ROLE_TRUSTED_PRINCIPALS / link_role_trusted_principals)."
     }
   }
 }
 
 resource "aws_iam_role_policy" "link" {
-  count = var.credentials == "role" ? 1 : 0
+  count = var.browser_role ? 1 : 0
 
   name   = "s3-access-${var.link_id}"
   role   = aws_iam_role.link[0].id

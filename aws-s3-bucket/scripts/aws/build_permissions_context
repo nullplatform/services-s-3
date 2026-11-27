@@ -5,12 +5,13 @@ set -euo pipefail
 # build_permissions_context — Prepares the Terraform execution environment
 # for link actions (link/unlink). Runs AFTER build_context, which has set:
 #   $CONTEXT, $VALUES, $SERVICE_PATH, $LINK_ID, $LINK_ACCESS_LEVEL,
-#   $LINK_PATH_PREFIX, $LINK_CREDENTIALS, $TFSTATE_BUCKET, $REGION
+#   $LINK_PATH_PREFIX, $LINK_BROWSER_ENABLED, $TFSTATE_BUCKET, $REGION
 #
-# The permissions module creates a dedicated IAM principal per link, with an
-# inline policy scoped to the target S3 bucket: an IAM user (access-key links,
-# whose key link_access_key creates) or an IAM role that only the configured
-# trusted principals can assume (role links).
+# The permissions module creates a dedicated IAM user per link (whose access key
+# link_access_key creates), with an inline policy scoped to the target S3 bucket.
+# While the link's browser_enabled is true it also creates an IAM role with the
+# same policy, which only the configured trusted principals (the S3 browser
+# worker) can assume; when browser_enabled is off the role does not exist.
 # ---------------------------------------------------------------------------
 
 # IMPORTANT: This script has its own yaml_value() function.
@@ -60,26 +61,27 @@ fi
 
 # --- Derive link-specific IAM principal name from link ID ------------------
 # Deterministic: always produces the same name for the same link. It names the
-# IAM user (access-key) or the IAM role (role); the S3 browser rebuilds the
-# role's name the same way, so this derivation must not change.
+# IAM user and the IAM role; the S3 browser rebuilds the role's name the same
+# way, so this derivation must not change.
 # Format: np-s3-<first 16 hex chars of link ID>  (~22 chars, safe for IAM)
 
 IAM_USER_NAME="np-s3-$(echo "${LINK_ID}" | tr -d '-' | cut -c1-16 | tr '[:upper:]' '[:lower:]')"
 export IAM_USER_NAME
 
-# --- Credentials mode and role trust -------------------------------------------
-# Role links are assumable only by the exact role ARNs configured here (env wins
-# over values.yaml), comma-separated; the module rejects anything else.
+# --- The explorer's role and its trust -------------------------------------------
+# The link's role exists only while browser_enabled is true. It is assumable only by the exact
+# role ARNs configured here (env wins over values.yaml), comma-separated; the module rejects
+# anything else.
 
-LINK_CREDENTIALS="${LINK_CREDENTIALS:-access-key}"
-if [ "$LINK_CREDENTIALS" != "access-key" ] && [ "$LINK_CREDENTIALS" != "role" ]; then
-  echo "ERROR: unknown link credentials '$LINK_CREDENTIALS' (expected access-key or role)." >&2
+BROWSER_ROLE="${LINK_BROWSER_ENABLED:-false}"
+if [ "$BROWSER_ROLE" != "true" ] && [ "$BROWSER_ROLE" != "false" ]; then
+  echo "ERROR: unknown LINK_BROWSER_ENABLED '$BROWSER_ROLE' (expected true or false)." >&2
   exit 1
 fi
 
-# Only role links get the list: a bad entry must not break access-key links.
+# Only a link with a role gets the list: a bad entry must not break links without one.
 TRUSTED_PRINCIPAL_ARNS="[]"
-if [ "$LINK_CREDENTIALS" = "role" ]; then
+if [ "$BROWSER_ROLE" = "true" ]; then
   TRUSTED_PRINCIPALS="${LINK_ROLE_TRUSTED_PRINCIPALS:-$(yaml_value "link_role_trusted_principals" "" "$VALUES")}"
   TRUSTED_PRINCIPAL_ARNS=$(jq -nc --arg list "$TRUSTED_PRINCIPALS" \
     '$list | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
@@ -87,8 +89,8 @@ fi
 PERMISSIONS_BOUNDARY_ARN="${LINK_PERMISSIONS_BOUNDARY_ARN:-$(yaml_value "link_permissions_boundary_arn" "" "$VALUES")}"
 
 # Unlink (delete) destroys the role whatever the list holds, so it never needs one.
-if [ "$LINK_CREDENTIALS" = "role" ] && [ "$TRUSTED_PRINCIPAL_ARNS" = "[]" ] && [ "${SERVICE_ACTION_TYPE:-}" != "delete" ]; then
-  echo "ERROR: link $LINK_ID uses credentials=role, but no principal may assume its role." >&2
+if [ "$BROWSER_ROLE" = "true" ] && [ "$TRUSTED_PRINCIPAL_ARNS" = "[]" ] && [ "${SERVICE_ACTION_TYPE:-}" != "delete" ]; then
+  echo "ERROR: link $LINK_ID has the S3 browser on (browser_enabled), but no principal may assume its role." >&2
   echo "       Set LINK_ROLE_TRUSTED_PRINCIPALS or link_role_trusted_principals in values.yaml" >&2
   echo "       (comma-separated IAM role ARNs; only the S3 browser worker's role)." >&2
   exit 1
@@ -122,12 +124,12 @@ jq -n \
   --arg     region                   "$REGION" \
   --arg     bucket_name              "$BUCKET_NAME" \
   --arg     principal_name           "$IAM_USER_NAME" \
-  --arg     credentials              "$LINK_CREDENTIALS" \
+  --argjson browser_role             "$BROWSER_ROLE" \
   --argjson trusted_principal_arns   "$TRUSTED_PRINCIPAL_ARNS" \
   --arg     permissions_boundary_arn "$PERMISSIONS_BOUNDARY_ARN" \
   --arg     access_level             "${LINK_ACCESS_LEVEL:-read-write}" \
   --arg     path_prefix              "$TOFU_PATH_PREFIX" \
   '{link_id: $link_id, region: $region, bucket_name: $bucket_name, principal_name: $principal_name,
-    credentials: $credentials, trusted_principal_arns: $trusted_principal_arns,
+    browser_role: $browser_role, trusted_principal_arns: $trusted_principal_arns,
     permissions_boundary_arn: $permissions_boundary_arn,
     access_level: $access_level, path_prefix: $path_prefix}' > "$TOFU_VAR_FILE"

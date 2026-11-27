@@ -509,47 +509,6 @@
             }
           }
         }
-      },
-      "delete-object": {
-        "name": "Delete object",
-        "execution": "sync",
-        "input": {
-          "type": "object",
-          "$schema": "http://json-schema.org/draft-07/schema#",
-          "additionalProperties": false,
-          "required": [
-            "linkId",
-            "key"
-          ],
-          "properties": {
-            "linkId": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9-]{1,64}$",
-              "title": "Link",
-              "description": "Id of the application's link to the bucket; S3 is opened with that link's keys"
-            },
-            "key": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^/].*[^/]$|^[^/]$",
-              "title": "Key",
-              "description": "Relative object key (no leading or trailing slash)"
-            }
-          }
-        },
-        "output": {
-          "type": "object",
-          "$schema": "http://json-schema.org/draft-07/schema#",
-          "required": [
-            "key"
-          ],
-          "properties": {
-            "key": {
-              "type": "string"
-            }
-          }
-        }
       }
     },
     "authorization": {
@@ -568,8 +527,7 @@
               "action:search-objects",
               "action:head-object",
               "action:presign-download",
-              "action:presign-upload",
-              "action:delete-object"
+              "action:presign-upload"
             ]
           }
         ]

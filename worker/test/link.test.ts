@@ -18,28 +18,27 @@ const BUCKET_SERVICE = { id: "svc-bucket", status: "active", specification_id: "
 const PENDING_SERVICE = { id: "svc-pending", status: "creating", specification_id: "spec-s3", attributes: {} };
 const DB_SERVICE = { id: "svc-db", status: "active", specification_id: "spec-rds", attributes: { bucket_name: "not-a-bucket" } };
 
-const baseLink = (overrides: Partial<Link> & { attributes?: Record<string, unknown> } = {}): Link => ({
-  id: "lnk-1",
-  status: "active",
-  service_id: "svc-bucket",
-  entity_nrn: APP_NRN,
-  ...overrides,
-  attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, aws_access_key_id: KEY_ID, aws_secret_access_key: SECRET, ...(overrides.attributes ?? {}) },
-});
-
 const ROLE_ACCOUNT = "123456789012";
 const ROLE_LINK_ID = "0A1B2C3D-4E5F-6789-abcd-ef0123456789";
 const ROLE_ARN = `arn:aws:iam::${ROLE_ACCOUNT}:role/np-s3-0a1b2c3d4e5f6789`;
 
-/** A role link as the service leaves it: credentials role, the role's ARN, no keys at all. */
-const roleLink = (overrides: Partial<Link> & { attributes?: Record<string, unknown> } = {}): Link => ({
-  id: ROLE_LINK_ID,
-  status: "active",
-  service_id: "svc-bucket",
-  entity_nrn: APP_NRN,
-  ...overrides,
-  attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, credentials: "role", role_arn: ROLE_ARN, iam_role_name: "np-s3-0a1b2c3d4e5f6789", ...(overrides.attributes ?? {}) },
-});
+/**
+ * A link as the service leaves it while its explorer is on: the role's ARN and name recorded. The
+ * application's key id is there too, its secret masked as the services API returns it by default.
+ */
+const baseLink = (overrides: Partial<Link> & { attributes?: Record<string, unknown> } = {}): Link => {
+  const id = String(overrides.id ?? "lnk-1");
+  return {
+    id,
+    status: "active",
+    service_id: "svc-bucket",
+    entity_nrn: APP_NRN,
+    ...overrides,
+    attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, aws_access_key_id: KEY_ID, aws_secret_access_key: null, role_arn: linkRoleArn(id, { accountId: ROLE_ACCOUNT }), iam_role_name: linkRoleName(id), ...(overrides.attributes ?? {}) },
+  };
+};
+
+const roleLink = (overrides: Partial<Link> & { attributes?: Record<string, unknown> } = {}): Link => baseLink({ id: ROLE_LINK_ID, ...overrides });
 
 // The catalog as the worker sees it: execution records and entities. `linkEnvelope` records a
 // pending execution for every envelope it builds (unless told not to), as the catalog would.
@@ -81,16 +80,11 @@ function fakePlatform(links: Record<string, Link>, grants: Grants = () => true) 
     async getSpecification(id) {
       return id === "spec-s3" ? { id, slug: "aws-s3-bucket-agent-k8s" } : { id, slug: "rds-postgres" };
     },
-    async getLink(id, { secrets = true } = {}) {
-      // "link <id>" is a read without secrets; "+secrets" marks the read that includes them.
-      seen.push(secrets ? `link ${id} +secrets` : `link ${id}`);
+    async getLink(id) {
+      seen.push(`link ${id}`);
       const found = links[id];
       if (!found) throw new PlatformError(`link ${id} not found`, 404, "LINK_NOT_FOUND");
-      if (secrets) return found;
-      // As the services API does: secret attributes come back masked as null.
-      const attributes = { ...(found.attributes ?? {}) };
-      if ("aws_secret_access_key" in attributes) attributes.aws_secret_access_key = null;
-      return { ...found, attributes };
+      return found;
     },
   };
   return { platform, seen, asked };
@@ -122,10 +116,6 @@ function recordingStore(existing: string[] = []) {
     async presign(target, key, disposition) {
       calls.push({ op: "presign", target, arg: disposition === undefined ? key : [key, disposition] });
       return { key, url: `https://example.invalid/${key}`, expires_at: "2026-01-01T00:00:00.000Z" };
-    },
-    async remove(target, key) {
-      calls.push({ op: "remove", target, arg: key });
-      return { key };
     },
   };
   return { store, calls };
@@ -169,7 +159,7 @@ function setup(
   const { platform, seen, asked } = fakePlatform(links, grants);
   const { store, calls } = recordingStore(existing);
   const warnings: string[] = [];
-  const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites, ...extra, warn: (message) => warnings.push(message) } });
+  const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites, linkRole: { accountId: ROLE_ACCOUNT }, ...extra, warn: (message) => warnings.push(message) }, assumeRole: async () => SESSION });
   return { handler, seen, asked, calls, warnings };
 }
 
@@ -260,12 +250,12 @@ describe("link mode: protocol", () => {
 });
 
 describe("link mode: handler", () => {
-  test("lists the link's bucket with the link's keys; bucket and region from the service", async () => {
+  test("lists the link's bucket with a session of the link's role; bucket and region from the service", async () => {
     const { handler, calls } = setup();
     const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1", prefix: "docs/" }), handler);
     expect(result.success).toBe(true);
     expect(parse(result)).toMatchObject({ bucket: "link-bucket", region: "sa-east-1", prefix: "docs/" });
-    expect(calls.at(-1)).toEqual({ op: "list", target: { bucket: "link-bucket", region: "sa-east-1", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } }, arg: "docs/" });
+    expect(calls.at(-1)).toMatchObject({ op: "list", target: { bucket: "link-bucket", region: "sa-east-1", credentials: SESSION }, arg: "docs/" });
   });
 
   test("a link of the application or of a resource under it is owned", async () => {
@@ -287,10 +277,10 @@ describe("link mode: handler", () => {
     }
   });
 
-  test("a key link is read without secrets first, then with them; a refused link never with them", async () => {
+  test("the link is read once, without secrets", async () => {
     const { handler, seen } = setup();
     await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
-    expect(seen).toEqual(["link lnk-1", "link lnk-1 +secrets", "service svc-bucket"]);
+    expect(seen).toEqual(["link lnk-1", "service svc-bucket"]);
     const pending = setup({ "lnk-1": baseLink({ status: "pending" }) });
     await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), pending.handler);
     expect(pending.seen).toEqual(["link lnk-1"]);
@@ -301,8 +291,8 @@ describe("link mode: handler", () => {
     expect(parse(await runCommand(linkEnvelope("list-objects", { link_id: "lnk-404" }), handler)).error).toMatchObject({ status: 404, code: "LINK_NOT_FOUND" });
   });
 
-  test("LINK_NOT_READY: not active, or no keys", async () => {
-    const cases = [baseLink({ status: "pending" }), baseLink({ attributes: { aws_access_key_id: "" } }), baseLink({ attributes: { aws_secret_access_key: undefined } }), baseLink({ service_id: undefined })];
+  test("LINK_NOT_READY: not active, or no service", async () => {
+    const cases = [baseLink({ status: "pending" }), baseLink({ service_id: undefined })];
     for (const link of cases) {
       const { handler, calls } = setup({ "lnk-1": link });
       const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
@@ -318,7 +308,6 @@ describe("link mode: handler", () => {
       expect(result.success).toBe(true);
       expect(parse(result).error).toMatchObject({ status: 403, code: "LINK_BROWSER_DISABLED" });
       expect(calls).toHaveLength(0);
-      // Refused on the read without secrets: the keys are never read.
       expect(seen).toEqual(["link lnk-1"]);
     }
   });
@@ -354,16 +343,18 @@ describe("link mode: handler", () => {
     expect(foreign.asked).toEqual([]);
   });
 
-  test("a delete asks for the permission that changes the link", async () => {
-    const reader = setup(undefined, true, { grants: (_user, action) => action === "service:link:read" });
-    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), reader.handler)).error).toMatchObject({ status: 403, code: "LINK_ACCESS_DENIED" });
-    expect(reader.asked).toEqual([`u-1 service:link:write ${APP_NRN}`]);
-    expect(reader.calls).toHaveLength(0);
-    const writer = setup(undefined, true, { grants: (_user, action) => action === "service:link:write" });
-    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), writer.handler))).toEqual({ key: "a.txt" });
+  test("delete-object is not a catalog action: refused before any read, even for a writer with writes on", async () => {
+    // Deleting is the service's link action, behind the link's approval; a catalog delete would skip it.
+    const writer = setup({ "lnk-1": baseLink({ attributes: { access_level: "read-write" } }) }, true);
+    const result = await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), writer.handler);
+    expect(result.success).toBe(true);
+    expect(parse(result).error).toMatchObject({ status: 400, code: "UNKNOWN_ACTION" });
+    expect(writer.seen).toEqual([]);
+    expect(writer.asked).toEqual([]);
+    expect(writer.calls).toHaveLength(0);
   });
 
-  test("presign-upload: a form for one file of one size at one key, with the link's keys", async () => {
+  test("presign-upload: a form for one file of one size at one key, with the link's role session", async () => {
     const { handler, calls, asked } = setup({ "lnk-1": baseLink({ attributes: { path_prefix: "uploads" } }) }, true);
     const result = await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "uploads/report.csv", size: 2048, content_type: "text/csv" }), handler);
     expect(parse(result)).toEqual({ key: "uploads/report.csv", url: "https://link-bucket.s3.example.invalid/", fields: [{ name: "key", value: "uploads/report.csv" }, { name: "Policy", value: "signed-policy" }], expires_at: "2026-01-01T00:05:00.000Z" });
@@ -373,13 +364,13 @@ describe("link mode: handler", () => {
       ["exists", "uploads/report.csv"],
       ["presignUpload", ["uploads/report.csv", 2048, "text/csv"]],
     ]);
-    expect(calls[1].target).toEqual({ bucket: "link-bucket", region: "sa-east-1", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } });
+    expect(calls[1].target).toMatchObject({ bucket: "link-bucket", region: "sa-east-1", credentials: SESSION });
     // The content type is optional; a zero-byte file is a file.
     expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "uploads/empty", size: 0 }), handler)).error).toBeUndefined();
     expect(calls.at(-1)).toMatchObject({ op: "presignUpload", arg: ["uploads/empty", 0, undefined] });
   });
 
-  test("presign-upload is refused like a delete: writes off, a read link, outside the prefix, without the permission", async () => {
+  test("presign-upload is refused: writes off, a read link, outside the prefix, without the permission", async () => {
     const upload = (handler: Handler, input: Record<string, unknown> = {}) => runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 1, ...input }), handler);
     const off = setup();
     expect(parse(await upload(off.handler)).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
@@ -436,13 +427,16 @@ describe("link mode: handler", () => {
     }
   });
 
-  test("masked keys are a worker failure, not a refusal", async () => {
-    // The services API masks secrets as null when the read did not include them.
-    for (const masked of ["********", null]) {
-      const { handler } = setup({ "lnk-1": baseLink({ attributes: { aws_secret_access_key: masked } }) });
+  test("LINK_ROLE_MISSING: the explorer is on but the link records no role (made before the link had one); nothing is assumed and the keys are not used", async () => {
+    for (const role_arn of [undefined, null, ""]) {
+      const { handler, calls } = setup({ "lnk-1": baseLink({ attributes: { role_arn, iam_role_name: undefined, aws_secret_access_key: SECRET } }) });
       const result = await runCommand(linkEnvelope("list-objects", { link_id: "lnk-1" }), handler);
-      expect(result.success).toBe(false);
-      expect(parse(result).error).toMatchObject({ status: 500, code: "PLATFORM" });
+      expect(result.success).toBe(true);
+      const { error } = parse(result);
+      expect(error).toMatchObject({ status: 409, code: "LINK_ROLE_MISSING" });
+      expect(error.message).toContain("update the link");
+      expect(calls).toHaveLength(0);
+      expect(result.data.stdout).not.toContain(SECRET);
     }
   });
 
@@ -467,6 +461,8 @@ describe("link mode: handler", () => {
       ["list-objects", { prefix: "upload" }],
       ["list-objects", { prefix: "uploads" }],
       ["list-objects", { prefix: "other/" }],
+      // A sibling that only starts with the same text, as the link's IAM policy reads it too (permissions/locals.tf).
+      ["list-objects", { prefix: "uploads-secrets/" }],
       ["search-objects", { prefix: "other/", query: "a" }],
       ["search-objects", { prefix: "upload", query: "a" }],
       ["head-object", { key: "other/a.txt" }],
@@ -493,15 +489,16 @@ describe("link mode: handler", () => {
     expect(linkOwnedBy("", "")).toBe(false);
   });
 
-  test("WRITE_NOT_ALLOWED on a read link; read-write and write may delete", async () => {
+  test("WRITE_NOT_ALLOWED on a read link; read-write and write may upload", async () => {
+    const upload = (handler: Handler) => runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 1 }), handler);
     const readOnly = setup({ "lnk-1": baseLink({ attributes: { access_level: "read" } }) }, true);
-    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), readOnly.handler)).error).toMatchObject({ status: 403, code: "WRITE_NOT_ALLOWED" });
+    expect(parse(await upload(readOnly.handler)).error).toMatchObject({ status: 403, code: "WRITE_NOT_ALLOWED" });
     expect(readOnly.calls).toHaveLength(0);
     const missing = setup({ "lnk-1": baseLink({ attributes: { access_level: undefined } }) }, true);
-    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), missing.handler)).error).toMatchObject({ code: "WRITE_NOT_ALLOWED" });
+    expect(parse(await upload(missing.handler)).error).toMatchObject({ code: "WRITE_NOT_ALLOWED" });
     for (const level of ["write", "read-write"]) {
       const writable = setup({ "lnk-1": baseLink({ attributes: { access_level: level } }) }, true);
-      expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), writable.handler))).toEqual({ key: "a.txt" });
+      expect(parse(await upload(writable.handler)).key).toBe("a.txt");
     }
     // Reads on a read link are fine (and on a write link left to AWS).
     expect(parse(await runCommand(linkEnvelope("head-object", { link_id: "lnk-1", key: "a.txt" }), readOnly.handler)).key).toBe("a.txt");
@@ -509,7 +506,7 @@ describe("link mode: handler", () => {
 
   test("WRITES_DISABLED comes first: no link read at all", async () => {
     const { handler, seen } = setup({ "lnk-1": baseLink({ attributes: { access_level: "read" }, entity_nrn: "organization=9" }) }, false);
-    expect(parse(await runCommand(linkEnvelope("delete-object", { link_id: "lnk-1", key: "a.txt" }), handler)).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
+    expect(parse(await runCommand(linkEnvelope("presign-upload", { link_id: "lnk-1", key: "a.txt", size: 1 }), handler)).error).toMatchObject({ status: 405, code: "WRITES_DISABLED" });
     expect(seen).toEqual([]);
   });
 
@@ -553,7 +550,7 @@ describe("link mode: the request is verified against the catalog", () => {
   });
 
   test("an execution of another operation, or with invalid recorded input", async () => {
-    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { action: "delete-object", input: { link_id: "lnk-1", key: "a.txt" } }));
+    await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { action: "head-object", input: { link_id: "lnk-1", key: "a.txt" } }));
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: { link_id: "lnk-1", bucket: "evil" } }));
     await refused(linkEnvelope("list-objects", { link_id: "lnk-1" }, {}, { input: null }));
   });
@@ -672,7 +669,7 @@ describe("link mode: the request is verified against the catalog", () => {
 });
 
 describe("link mode: platform", () => {
-  test("reads the link with secrets, never from cache; 404 is LINK_NOT_FOUND", async () => {
+  test("reads the link with no secrets query, never from cache; 404 is LINK_NOT_FOUND", async () => {
     const seen: string[] = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       seen.push(`${init?.method ?? "GET"} ${String(url)}`);
@@ -683,23 +680,8 @@ describe("link mode: platform", () => {
     const client = createPlatform({ apiUrl: "https://api.test", apiKey: "k", fetchImpl });
     await client.getLink("lnk-1");
     await client.getLink("lnk-1");
-    expect(seen).toEqual(["POST https://api.test/token", "GET https://api.test/link/lnk-1?include_secret_attributes=true", "GET https://api.test/link/lnk-1?include_secret_attributes=true"]);
+    expect(seen).toEqual(["POST https://api.test/token", "GET https://api.test/link/lnk-1", "GET https://api.test/link/lnk-1"]);
     await expect(client.getLink("missing")).rejects.toMatchObject({ status: 404, code: "LINK_NOT_FOUND" });
-    const renamed = createPlatform({ apiUrl: "https://api.test", apiKey: "k", fetchImpl, linkSecretsQuery: "show_secrets=1" });
-    await renamed.getLink("lnk-1");
-    expect(seen.at(-1)).toBe("GET https://api.test/link/lnk-1?show_secrets=1");
-  });
-
-  test("secrets: false reads the link without the secrets query", async () => {
-    const seen: string[] = [];
-    const fetchImpl = (async (url: string | URL | Request) => {
-      seen.push(String(url));
-      if (String(url).endsWith("/token")) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), { status: 200 });
-      return new Response(JSON.stringify(baseLink()), { status: 200 });
-    }) as typeof fetch;
-    const client = createPlatform({ apiUrl: "https://api.test", apiKey: "k", fetchImpl, linkSecretsQuery: "show_secrets=1" });
-    await client.getLink("lnk-1", { secrets: false });
-    expect(seen.at(-1)).toBe("https://api.test/link/lnk-1");
   });
 
   test("reads the execution record and the entity from the catalog, never from cache", async () => {
@@ -841,7 +823,7 @@ describe("link mode: S3 store, uploads", () => {
     expect(asked[1]).toEqual({ Bucket: "b", Key: "docs/b", Conditions: [["content-length-range", 0, 0]], Expires: 300 });
   });
 
-  test("a role link's upload form never outlives its session", async () => {
+  test("an upload form never outlives its session", async () => {
     let requested = 0;
     const presignPost = (async (_client: unknown, options: { Expires?: number }) => ((requested = options.Expires ?? 0), { url: "https://b.s3.amazonaws.com/", fields: {} })) as never;
     const now = Date.parse("2026-01-01T00:00:00.000Z");
@@ -937,7 +919,7 @@ describe("link mode: S3 store, search", () => {
   });
 });
 
-describe("link mode: the keys never leave the worker", () => {
+describe("link mode: no key or session leaves the worker", () => {
   const output: string[] = [];
   const originals = { log: console.log, error: console.error, warn: console.warn, info: console.info, out: process.stdout.write, err: process.stderr.write };
   beforeEach(() => {
@@ -966,7 +948,7 @@ describe("link mode: the keys never leave the worker", () => {
     const leaky = (op: string) => async (target: Target) => {
       throw Object.assign(new Error(`${op} failed: ${quoted(target)}`), { name: "SignatureDoesNotMatch" });
     };
-    const throwing: ObjectStore = { list: leaky("list"), search: leaky("search"), head: leaky("head"), presign: leaky("presign"), exists: leaky("exists"), presignUpload: leaky("presignUpload"), remove: leaky("remove") };
+    const throwing: ObjectStore = { list: leaky("list"), search: leaky("search"), head: leaky("head"), presign: leaky("presign"), exists: leaky("exists"), presignUpload: leaky("presignUpload") };
     const unexpected: ObjectStore = { ...throwing, list: async (target) => Promise.reject(new TypeError(`boom ${quoted(target)}`)) };
     const links = {
       "lnk-1": baseLink(),
@@ -977,8 +959,11 @@ describe("link mode: the keys never leave the worker", () => {
       "lnk-db": baseLink({ service_id: "svc-db" }),
       "lnk-pending": baseLink({ service_id: "svc-pending" }),
       [ROLE_LINK_ID]: roleLink(),
-      "role-prefix": roleLink({ id: "role-prefix", attributes: { role_arn: undefined, path_prefix: "p/" } }),
-      "role-read": roleLink({ id: "role-read", attributes: { role_arn: undefined, access_level: "read" } }),
+      "role-prefix": roleLink({ id: "role-prefix", attributes: { path_prefix: "p/" } }),
+      "role-read": roleLink({ id: "role-read", attributes: { access_level: "read" } }),
+      // The application's key, as it would be if the read ever included secrets: it must go nowhere.
+      "lnk-keyed": baseLink({ id: "lnk-keyed", attributes: { aws_secret_access_key: SECRET } }),
+      "lnk-norole": baseLink({ id: "lnk-norole", attributes: { role_arn: undefined, aws_secret_access_key: SECRET } }),
     };
     const { platform } = fakePlatform(links);
     const { store: happy } = recordingStore();
@@ -993,7 +978,7 @@ describe("link mode: the keys never leave the worker", () => {
             ["head-object", { key: "a.txt" }],
             ["presign-download", { key: "a.txt" }],
             ["presign-download", { key: "a.txt", disposition: "inline" }],
-            ["delete-object", { key: "a.txt" }],
+            ["presign-upload", { key: "a.txt", size: 1 }],
           ] as const) {
             results.push(await runCommand(linkEnvelope(slug, { link_id: linkId, ...input }), handler));
           }
@@ -1011,8 +996,8 @@ describe("link mode: the keys never leave the worker", () => {
   });
 });
 
-describe("link mode: role links", () => {
-  /** A handler over role links whose AssumeRole is recorded (and answered by `sts`). */
+describe("link mode: the link's role", () => {
+  /** A handler over links whose AssumeRole is recorded (and answered by `sts`). */
   function setupRole(links: Record<string, Link> = { [ROLE_LINK_ID]: roleLink() }, { allowWrites = false, linkRole = { accountId: ROLE_ACCOUNT } as { accountId?: string; partition?: string }, sts = async (_request: AssumeRoleRequest) => SESSION } = {}) {
     const { platform, seen } = fakePlatform(links);
     const { store, calls } = recordingStore();
@@ -1036,12 +1021,13 @@ describe("link mode: role links", () => {
     const expiration = calls.at(-1)!.target.credentials!.expiration!.getTime();
     expect(expiration).toBeGreaterThan(Date.now() + 890_000);
     expect(expiration).toBeLessThanOrEqual(Date.now() + 900_000);
-    // Only the read without secrets, ever.
+    // The link, then its service: nothing else is read.
     expect(seen).toEqual([`link ${ROLE_LINK_ID}`, "service svc-bucket"]);
   });
 
-  test("a link with no role_arn yet still gets the rebuilt role; the partition is configurable", async () => {
-    const { handler, assumed } = setupRole({ [ROLE_LINK_ID]: roleLink({ attributes: { role_arn: undefined } }) }, { linkRole: { accountId: ROLE_ACCOUNT, partition: "aws-cn" } });
+  test("the partition is configurable", async () => {
+    const link = roleLink({ attributes: { role_arn: `arn:aws-cn:iam::${ROLE_ACCOUNT}:role/np-s3-0a1b2c3d4e5f6789` } });
+    const { handler, assumed } = setupRole({ [ROLE_LINK_ID]: link }, { linkRole: { accountId: ROLE_ACCOUNT, partition: "aws-cn" } });
     expect(parse(await run(handler, "head-object", { key: "a.txt" })).key).toBe("a.txt");
     expect(assumed[0]!.roleArn).toBe(`arn:aws-cn:iam::${ROLE_ACCOUNT}:role/np-s3-0a1b2c3d4e5f6789`);
   });
@@ -1124,7 +1110,7 @@ describe("link mode: role links", () => {
     }
   });
 
-  test("a role link's presigned URL never outlives its session", async () => {
+  test("a presigned URL never outlives its session", async () => {
     const { handler, calls } = setupRole(undefined, { sts: async () => ({ ...SESSION, expiration: new Date(Date.now() + 900_000) }) });
     await run(handler, "presign-download", { key: "a.txt" });
     const target = calls.at(-1)!.target;
@@ -1141,7 +1127,7 @@ describe("link mode: role links", () => {
     expect(requested).toBeLessThanOrEqual(900);
     expect(new Date(download.expires_at).getTime()).toBeLessThanOrEqual(target.credentials!.expiration!.getTime() + 1000);
     expect(new Date(download.expires_at).getTime() - before).toBeLessThanOrEqual(901_000);
-    // Key links (no expiration) keep the configured TTL.
+    // Credentials with no expiration keep the configured TTL.
     await s3.presign({ bucket: "b", credentials: { accessKeyId: KEY_ID, secretAccessKey: SECRET } }, "a.txt");
     expect(requested).toBe(3600);
   });
@@ -1171,7 +1157,7 @@ describe("link mode: role links", () => {
     expect(asked.at(-1)!.expiresIn).toBe(20);
   });
 
-  test("ownership, status, service, prefix and write checks apply as for key links, before any AssumeRole", async () => {
+  test("ownership, status, service, prefix and write checks apply before any AssumeRole", async () => {
     const cases: Array<[Link, string, Record<string, unknown>, boolean, number, string]> = [
       [roleLink({ entity_nrn: "organization=1:account=2:namespace=3:application=5" }), "list-objects", {}, false, 403, "LINK_NOT_OWNED"],
       [roleLink({ status: "pending" }), "list-objects", {}, false, 409, "LINK_NOT_READY"],
@@ -1180,31 +1166,30 @@ describe("link mode: role links", () => {
       [roleLink({ service_id: "svc-db" }), "list-objects", {}, false, 400, "NOT_A_BUCKET"],
       [roleLink({ attributes: { path_prefix: "uploads" } }), "head-object", { key: "other/a.txt" }, false, 403, "OUTSIDE_PREFIX"],
       [roleLink({ attributes: { path_prefix: "uploads" } }), "list-objects", { prefix: "other/" }, false, 403, "OUTSIDE_PREFIX"],
-      [roleLink({ attributes: { access_level: "read" } }), "delete-object", { key: "a.txt" }, true, 403, "WRITE_NOT_ALLOWED"],
-      [roleLink(), "delete-object", { key: "a.txt" }, false, 405, "WRITES_DISABLED"],
+      [roleLink({ attributes: { access_level: "read" } }), "presign-upload", { key: "a.txt", size: 1 }, true, 403, "WRITE_NOT_ALLOWED"],
+      [roleLink(), "presign-upload", { key: "a.txt", size: 1 }, false, 405, "WRITES_DISABLED"],
     ];
     for (const [link, slug, input, allowWrites, status, code] of cases) {
-      const { handler, calls, assumed, seen } = setupRole({ [ROLE_LINK_ID]: link }, { allowWrites });
+      const { handler, calls, assumed } = setupRole({ [ROLE_LINK_ID]: link }, { allowWrites });
       expect(parse(await run(handler, slug, input)).error).toMatchObject({ status, code });
       expect(assumed).toHaveLength(0);
       expect(calls).toHaveLength(0);
-      expect(seen.some((entry) => entry.endsWith("+secrets"))).toBe(false);
     }
     // Inside the prefix and with a write level, the same link works.
     const { handler, calls } = setupRole({ [ROLE_LINK_ID]: roleLink({ attributes: { path_prefix: "uploads", access_level: "write" } }) }, { allowWrites: true });
     expect(parse(await run(handler, "list-objects")).prefix).toBe("uploads/");
-    expect(parse(await run(handler, "delete-object", { key: "uploads/a.txt" }))).toEqual({ key: "uploads/a.txt" });
-    expect(calls.map((call) => call.op)).toEqual(["list", "remove"]);
+    expect(parse(await run(handler, "presign-upload", { key: "uploads/a.txt", size: 1 })).key).toBe("uploads/a.txt");
+    expect(calls.map((call) => call.op)).toEqual(["list", "exists", "presignUpload"]);
   });
 
-  test("a key link (credentials access-key or absent) never assumes a role", async () => {
-    for (const credentials of ["access-key", undefined]) {
-      const { handler, calls, assumed, seen } = setupRole({ "lnk-1": baseLink({ attributes: { credentials } }) });
-      await run(handler, "list-objects", {}, "lnk-1");
-      expect(assumed).toHaveLength(0);
-      expect(calls.at(-1)?.target.credentials).toEqual({ accessKeyId: KEY_ID, secretAccessKey: SECRET });
-      expect(seen).toContain("link lnk-1 +secrets");
-    }
+  test("the application's key is never used, even when the link carries it", async () => {
+    const link = baseLink({ attributes: { aws_secret_access_key: SECRET } });
+    const { handler, calls, assumed } = setupRole({ "lnk-1": link });
+    await run(handler, "list-objects", {}, "lnk-1");
+    expect(assumed).toHaveLength(1);
+    expect(calls.at(-1)?.target.credentials).toMatchObject(SESSION);
+    expect(JSON.stringify(calls)).not.toContain(SECRET);
+    expect(JSON.stringify(calls)).not.toContain(KEY_ID);
   });
 
   test("names: the role as the service derives it, the session in STS's alphabet", () => {

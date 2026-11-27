@@ -23,10 +23,5 @@
     "action": "presign-upload",
     "transport": "notification",
     "timeout_ms": 15000
-  },
-  {
-    "action": "delete-object",
-    "transport": "notification",
-    "timeout_ms": 15000
   }
 ]

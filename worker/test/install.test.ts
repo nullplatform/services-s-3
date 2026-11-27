@@ -78,7 +78,7 @@ describe("install.mjs", () => {
       "GET /catalog/specifications?slug=s3_browser",
       "POST /catalog/specifications",
       "GET /catalog/specifications/<specification id>/executors",
-      ...["list-objects", "search-objects", "head-object", "presign-download", "presign-upload", "delete-object"].map(() => "POST /catalog/specifications/<specification id>/executors"),
+      ...["list-objects", "search-objects", "head-object", "presign-download", "presign-upload"].map(() => "POST /catalog/specifications/<specification id>/executors"),
       "GET /notification/channel?nrn=organization%3D1",
       "POST /notification/channel",
       "GET /link?nrn=organization%3D1&show_descendants=true&limit=100&offset=0",
@@ -118,7 +118,7 @@ describe("install.mjs", () => {
     const sent = calls.map((call) => `${call.method} ${call.url.replace("https://api.test", "")}`);
     expect(sent.filter((line) => line === "POST /token")).toHaveLength(1);
     expect(calls.find((call) => call.method === "PATCH" && call.url.endsWith("/catalog/specifications/spec-1"))?.body).toMatchObject({ name: "S3 browser", allow_destructive: true });
-    expect(sent.filter((line) => line === "POST /catalog/specifications/spec-1/executors")).toHaveLength(5);
+    expect(sent.filter((line) => line === "POST /catalog/specifications/spec-1/executors")).toHaveLength(4);
     expect(calls.find((call) => call.method === "POST" && call.url.endsWith("/notification/channel"))?.body).toMatchObject({ nrn: "organization=1", configuration: { api_key: AGENT_KEY, selector: SELECTOR, command: { type: "package-exec", data: { package: "aws-s3-bucket" } } } });
     const seeded = calls.filter((call) => call.method === "POST" && call.url.endsWith("/catalog/instances/s3_browser")).map((call) => call.body);
     expect(seeded).toEqual([

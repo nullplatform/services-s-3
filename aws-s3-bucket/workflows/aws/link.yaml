@@ -31,7 +31,7 @@ steps:
         type: environment
       - name: LINK_PATH_PREFIX
         type: environment
-      - name: LINK_CREDENTIALS
+      - name: LINK_BROWSER_ENABLED
         type: environment
 
   - name: build permissions context

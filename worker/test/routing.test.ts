@@ -42,20 +42,23 @@ const catalog = (slug: string, specification: string, extra: Record<string, unkn
 describe("routing: link mode", () => {
   test("a catalog execution of s3_browser is the worker's; bash never runs", async () => {
     const { answer, spawned, linked } = setup();
-    for (const slug of ["list-objects", "head-object", "presign-download", "delete-object"]) {
+    for (const slug of ["list-objects", "head-object", "presign-download", "presign-upload"]) {
       const { success, output } = await answer(catalog(slug, "s3_browser"));
       expect(success).toBe(true);
       // The worker's JSON on stdout, which the agent surfaces as the command's stdOut.
       expect(output).toEqual({ success: true, data: { stdout: JSON.stringify({ handled: slug }) } });
     }
-    expect(linked.map((command) => [command.action, command.link?.execution_id])).toEqual(["list-objects", "head-object", "presign-download", "delete-object"].map((slug) => [slug, "exec-1"]));
+    expect(linked.map((command) => [command.action, command.link?.execution_id])).toEqual(["list-objects", "head-object", "presign-download", "presign-upload"].map((slug) => [slug, "exec-1"]));
     expect(spawned).toEqual([]);
   });
 
   test("an s3_browser execution of an unknown operation is refused by the worker, not handed to bash", async () => {
     const { answer, spawned, linked } = setup();
-    const { output } = await answer(catalog("rm-rf", "s3_browser"));
-    expect(JSON.parse(output.data.stdout).error).toMatchObject({ status: 400, code: "UNKNOWN_ACTION" });
+    // delete-object included: deleting is the service's link action, behind the link's approval.
+    for (const slug of ["rm-rf", "delete-object"]) {
+      const { output } = await answer(catalog(slug, "s3_browser"));
+      expect(JSON.parse(output.data.stdout).error).toMatchObject({ status: 400, code: "UNKNOWN_ACTION" });
+    }
     expect(linked).toEqual([]);
     expect(spawned).toEqual([]);
   });
@@ -78,7 +81,7 @@ describe("routing: link mode", () => {
 describe("routing: everything else runs bash as worker-bridge did", () => {
   const documents: Array<[string, unknown]> = [
     ["a service action", { notification: { action: "service:action:create", slug: "create-s3-bucket", type: "create", service: { id: "svc-1", specification: { slug: "aws-s3-bucket" } }, parameters: { versioning: true } } }],
-    ["a link action", { notification: { action: "link:action:create", slug: "create-s3-bucket-link", type: "create", service: { id: "svc-1" }, link: { id: "lnk-1", attributes: { credentials: "role" } } } }],
+    ["a link action", { notification: { action: "link:action:create", slug: "create-s3-bucket-link", type: "create", service: { id: "svc-1" }, link: { id: "lnk-1", attributes: { browser_enabled: true } } } }],
     ["a catalog execution of another specification", catalog("list-objects", "aws-s3-bucket")],
     ["the s3_browser slug without the catalog action", { notification: { action: "service:action:create", specification: { slug: "s3_browser" }, slug: "list-objects" } }],
     ["the old direct command (agent identity)", { action: "list-objects", service_id: "svc-1", prefix: "" }],

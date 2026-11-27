@@ -1,10 +1,9 @@
 /**
- * S3 with the credentials a target carries: the link's own IAM keys, or a session of the link's
- * IAM role. Never with the worker's own identity: a target has no way to ask for it. A fresh,
- * uncached client per request, so a client built with one link's credentials never serves another.
+ * S3 with the credentials a target carries: a session of the link's IAM role. Never with the
+ * worker's own identity: a target has no way to ask for it. A fresh, uncached client per request, so a client built with one link's credentials never serves another.
  * One folder level per listing; a search walks every level under its folder.
  */
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Disposition } from "./protocol";
@@ -86,7 +85,7 @@ export interface Upload {
   expires_at: string;
 }
 
-/** Static credentials for one target (a link's IAM user or role session); never logged, never returned. */
+/** Static credentials for one target (a link's IAM role session); never logged, never returned. */
 export interface StaticCredentials {
   accessKeyId: string;
   secretAccessKey: string;
@@ -114,7 +113,6 @@ export interface ObjectStore {
   exists(target: Target, key: string): Promise<boolean>;
   /** A form that uploads one file of exactly `size` bytes to exactly `key`, and nothing else. */
   presignUpload(target: Target, key: string, size: number, contentType?: string): Promise<Upload>;
-  remove(target: Target, key: string): Promise<{ key: string }>;
 }
 
 export class StoreError extends Error {
@@ -153,7 +151,7 @@ export function s3ErrorStatus(error: unknown): number {
   return 502;
 }
 
-/** A client with exactly the credentials it is given (a link's keys or role session). */
+/** A client with exactly the credentials it is given (a link's role session). */
 export function defaultClientFactory(config: S3ClientConfig & { credentials: NonNullable<S3ClientConfig["credentials"]> }): S3Client {
   return new S3Client(config);
 }
@@ -172,7 +170,7 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, viewTtlSecon
     // A target without credentials would fall back to the SDK's default chain, the worker's own
     // identity: refused, whatever the types say.
     if (!credentials?.accessKeyId || !credentials.secretAccessKey) throw new StoreError("no link credentials for this request", 500, "NO_CREDENTIALS");
-    // A fresh client per request, never cached: a client built with one link's keys can never
+    // A fresh client per request, never cached: a client built with one link's session can never
     // serve another request.
     return clientFactory({ region, credentials: { accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey, ...(credentials.sessionToken ? { sessionToken: credentials.sessionToken } : {}) } });
   };
@@ -274,11 +272,6 @@ export function createS3({ defaultRegion, downloadTtlSeconds = 900, viewTtlSecon
           Expires: ttl,
         });
         return { key, url, fields: Object.entries(fields).map(([name, value]) => ({ name, value })), expires_at: new Date(now() + ttl * 1000).toISOString() };
-      }),
-    remove: (target, key) =>
-      wrap(target, async () => {
-        await client(target).send(new DeleteObjectCommand({ Bucket: target.bucket, Key: key }));
-        return { key };
       }),
   };
 }

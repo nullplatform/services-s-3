@@ -3,6 +3,7 @@ import Ajv from "ajv";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { APPLICATION_NRN, createHandler, runCommand } from "../src/handler";
+import { linkRoleArn, linkRoleName } from "../src/role";
 import type { Platform } from "../src/platform";
 import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, isLinkPayload, parseLinkOperation } from "../src/protocol";
 import type { ObjectStore } from "../src/s3";
@@ -59,7 +60,7 @@ const platform: Platform = {
     return true;
   },
   async getLink(id) {
-    return { id, status: "active", service_id: "svc-1", entity_nrn: APP_NRN, attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, aws_access_key_id: "AKIAEXAMPLE", aws_secret_access_key: "example-secret" } };
+    return { id, status: "active", service_id: "svc-1", entity_nrn: APP_NRN, attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, role_arn: linkRoleArn(String(id), { accountId: "123456789012" }), iam_role_name: linkRoleName(String(id)) } };
   },
 };
 const store: ObjectStore = {
@@ -81,11 +82,8 @@ const store: ObjectStore = {
   async presignUpload(_t, key) {
     return { key, url: "https://example.invalid/", fields: [{ name: "key", value: key }, { name: "Policy", value: "p" }, { name: "X-Amz-Signature", value: "s" }], expires_at: "2026-01-01T00:00:00.000Z" };
   },
-  async remove(_t, key) {
-    return { key };
-  },
 };
-const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true } });
+const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true, linkRole: { accountId: "123456789012" } }, assumeRole: async () => ({ accessKeyId: "ASIAEXAMPLE", secretAccessKey: "example-secret", sessionToken: "example-token" }) });
 
 const inputs: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1", prefix: "docs/", limit: 50, token: "t" },
@@ -93,7 +91,6 @@ const inputs: Record<string, Record<string, unknown>> = {
   "head-object": { link_id: "lnk-1", key: "docs/a.txt" },
   "presign-download": { link_id: "lnk-1", key: "docs/a.txt", disposition: "inline" },
   "presign-upload": { link_id: "lnk-1", key: "docs/a.txt", size: 1024, content_type: "text/plain" },
-  "delete-object": { link_id: "lnk-1", key: "docs/a.txt" },
 };
 const minimal: Record<string, Record<string, unknown>> = {
   "list-objects": { link_id: "lnk-1" },
@@ -101,7 +98,6 @@ const minimal: Record<string, Record<string, unknown>> = {
   "head-object": { link_id: "lnk-1", key: "a" },
   "presign-download": { link_id: "lnk-1", key: "a" },
   "presign-upload": { link_id: "lnk-1", key: "a", size: 0 },
-  "delete-object": { link_id: "lnk-1", key: "a" },
 };
 let sequence = 0;
 const envelope = (slug: string, input: unknown) => {
@@ -139,6 +135,8 @@ describe("s3_browser catalog specification", () => {
 
   test("declares exactly the link-mode actions, all sync, no per-action permission", () => {
     expect(Object.keys(actions).sort()).toEqual([...LINK_ACTIONS].sort());
+    // No delete: it is the service's link action, behind the link's approval, and a catalog one would skip it.
+    expect(Object.keys(actions)).not.toContain("delete-object");
     for (const action of Object.values(actions)) {
       expect(action.execution).toBe("sync");
       expect(action.permission).toBeUndefined();
@@ -209,7 +207,7 @@ describe("s3_browser catalog specification", () => {
   test("everyone gets read, list and every action (no read-object: the worker never handles file content): who may read or change a link is the worker's check", () => {
     const grants: Array<{ principals: Array<{ type: string }>; actions: string[] }> = specification.schema.authorization.entities.grants;
     expect(grants).toEqual([
-      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload", "action:delete-object"] },
+      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload"] },
     ]);
     // Nobody creates or deletes the entity from the block.
     for (const verb of ["create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);

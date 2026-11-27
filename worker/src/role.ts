@@ -1,6 +1,6 @@
 /**
- * Role links (link attribute `credentials: role`): the link has no static key, only an IAM role
- * that trusts this worker's role. The worker never takes the role from the link: it rebuilds the
+ * A link whose explorer is on has an IAM role that trusts this worker's role (the service creates
+ * it only while `browser_enabled` is true). The worker never takes the role from the link: it rebuilds the
  * ARN from the link id the way the aws-s3-bucket service names it (`np-s3-<first 16 chars of the
  * id without dashes, lowercased>`), in the account configured on the worker, and assumes it with
  * its own identity for one short session per request.

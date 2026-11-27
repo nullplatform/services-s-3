@@ -21,7 +21,7 @@ export interface Service {
   attributes?: Record<string, unknown>;
 }
 
-/** A service link; in link mode its attributes carry the IAM keys (or the IAM role) S3 is opened with. */
+/** A service link; in link mode its attributes say whether the explorer is on and which role was created for it. */
 export interface Link {
   id: string | number;
   status?: string;
@@ -39,8 +39,8 @@ export interface Specification {
 export interface Platform {
   getService(id: string): Promise<Service>;
   getSpecification(id: string): Promise<Specification>;
-  /** Reads a link, including its secret attributes unless `secrets` is false. Never cached. */
-  getLink(id: string, options?: { secrets?: boolean }): Promise<Link>;
+  /** Reads a link as the services API returns it by default (secret attributes masked). Never cached. */
+  getLink(id: string): Promise<Link>;
   /** The catalog's record of an action execution (`GET /catalog/actions/{slug}/executions/{id}`). Never cached. */
   getExecution(specificationSlug: string, id: string): Promise<CatalogExecution>;
   /** A catalog entity (`GET /catalog/instances/{slug}/{id}`). Never cached. */
@@ -73,17 +73,13 @@ export interface CatalogEntity {
 interface Options {
   apiUrl?: string;
   apiKey?: string;
-  /** Query string that makes `GET /link/{id}` return secret attributes (S3_BROWSER_LINK_SECRETS_QUERY). */
-  linkSecretsQuery?: string;
   fetchImpl?: typeof fetch;
   cacheTtlMs?: number;
   specificationTtlMs?: number;
   now?: () => number;
 }
 
-export const DEFAULT_LINK_SECRETS_QUERY = "include_secret_attributes=true";
-
-export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey, linkSecretsQuery = DEFAULT_LINK_SECRETS_QUERY, fetchImpl = fetch, cacheTtlMs = 60_000, specificationTtlMs = 3_600_000, now = Date.now }: Options): Platform {
+export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey, fetchImpl = fetch, cacheTtlMs = 60_000, specificationTtlMs = 3_600_000, now = Date.now }: Options): Platform {
   const base = apiUrl.replace(/\/$/, "");
   let session: { token: string; expiresAt: number } | null = null;
   const cache = new Map<string, { value: unknown; expiresAt: number }>();
@@ -121,16 +117,12 @@ export function createPlatform({ apiUrl = "https://api.nullplatform.com", apiKey
     return (await response.json()) as T;
   }
 
-  /**
-   * A link read: never cached (its keys must not outlive the request), 404 is LINK_NOT_FOUND.
-   * `secrets: false` leaves the secrets query out, so the services API masks secret attributes.
-   */
-  async function getLink(id: string, { secrets = true }: { secrets?: boolean } = {}): Promise<Link> {
+  /** A link read: never cached, 404 is LINK_NOT_FOUND. No secrets query: the application's keys are never read. */
+  async function getLink(id: string): Promise<Link> {
     const path = `/link/${encodeURIComponent(id)}`;
-    const query = secrets ? linkSecretsQuery.replace(/^\?/, "") : "";
-    const response = await fetchImpl(`${base}${path}${query ? `?${query}` : ""}`, { headers: { authorization: `Bearer ${await token()}`, accept: "application/json" } });
+    const response = await fetchImpl(`${base}${path}`, { headers: { authorization: `Bearer ${await token()}`, accept: "application/json" } });
     if (response.status === 404) throw new PlatformError(`link ${id} not found`, 404, "LINK_NOT_FOUND");
-    if (response.status === 403) throw new PlatformError(`link ${id} is not visible to this worker${secrets ? " (its API key may lack service:link:read-secrets)" : ""}`, 403, "FORBIDDEN");
+    if (response.status === 403) throw new PlatformError(`link ${id} is not visible to this worker`, 403, "FORBIDDEN");
     if (!response.ok) throw new PlatformError(`${path} answered HTTP ${response.status}`);
     return (await response.json()) as Link;
   }

@@ -4,8 +4,13 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # delete_object — the `delete-object` link action: deletes one object of the link's service
 # bucket. The role this workflow runs with can delete any object of any bucket of the
-# installation, so every rule the S3 browser worker applies to a delete (worker/src/handler.ts,
+# installation, so every rule the S3 browser worker applies to a write (worker/src/handler.ts,
 # worker/src/protocol.ts) is applied here, from the link's own record, before S3 is called.
+#
+# The notification is not trusted: whoever may run an agent command can forge one. Only the ids
+# in it are used, to read the records again: the link, the action (it must be this link's
+# delete-object action, approved and not finished; the key comes from it) and the link's service
+# (the bucket comes from it). A notification that disagrees with those records is refused.
 #
 # Expects (engine-injected): CONTEXT (the notification), and the AWS credentials exported by
 # utils/assume_role_step. It does not run build_context: that step creates a tfstate bucket.
@@ -74,6 +79,34 @@ link_refusal() {
   return 0
 }
 
+# The action as read back, checked against what it must be to run. $1 is the action as
+# `np link action read` prints it, $2 the link id, $3 the id of the link specification's
+# `delete-object` action specification. Prints the refusal and returns 1, or returns 0.
+action_refusal() {
+  local action="$1" link_id="$2" delete_spec_id="$3" action_link_id spec_id status
+  # service-api reads an action by its id alone (GET /link/:linkId/action/:id only authorizes on
+  # the link), so the link it belongs to is checked here.
+  action_link_id=$(echo "$action" | jq -r '.link_id // ""')
+  if [ "$action_link_id" != "$link_id" ]; then
+    echo "the action does not belong to link $link_id"
+    return 1
+  fi
+  # By the specification's id, not the action's slug: the slug comes from a name the creator chooses.
+  spec_id=$(echo "$action" | jq -r '.specification_id // ""')
+  if [ -z "$delete_spec_id" ] || [ "$spec_id" != "$delete_spec_id" ]; then
+    echo "the action is not the link's delete-object action"
+    return 1
+  fi
+  # pending: approved (or needing no approval) and queued; in_progress: being run. pending_create
+  # still waits for its approval, and every other status has ended.
+  status=$(echo "$action" | jq -r '.status // "unknown"')
+  if [ "$status" != "pending" ] && [ "$status" != "in_progress" ]; then
+    echo "the action cannot run (status $status)"
+    return 1
+  fi
+  return 0
+}
+
 # Writes the action's results. An action of a link is updated through the link's route: the
 # service's route answers "Action does not belong to the service" for it. Both commands take the
 # ids from NP_ACTION_CONTEXT.
@@ -96,40 +129,71 @@ fail() {
 }
 
 main() {
-  local link_id service_id bucket region key link link_service_id message error_file code
+  local link_id action_id service_id bucket region key claimed_key link link_service_id
+  local link_spec_id delete_spec_id action service claimed message error_file code
   local -a aws_args
 
   link_id=$(echo "$CONTEXT" | jq -r '.link.id // ""')
   if [ -z "$link_id" ]; then
     fail "delete-object runs on a link, not on the service"
   fi
-
-  # jq -j and a sentinel: $(...) would drop a key's trailing newlines.
-  key=$(echo "$CONTEXT" | jq -j '.parameters.key // ""'; printf x)
-  key="${key%x}"
-  if ! message=$(key_refusal "$key"); then
-    fail "$message" ""
+  action_id=$(echo "$CONTEXT" | jq -r '.id // ""')
+  if [ -z "$action_id" ]; then
+    fail "the notification names no action"
   fi
 
   # The link is read again, not taken from the notification: its status and attributes are what
   # decide, and the notification may carry neither.
-  link=$(np link read --id "$link_id" --format json) || fail "link $link_id could not be read" "$key"
+  link=$(np link read --id "$link_id" --format json) || fail "link $link_id could not be read"
 
   service_id=$(echo "$CONTEXT" | jq -r '.service.id // ""')
   link_service_id=$(echo "$link" | jq -r '.service_id // ""')
   if [ -z "$service_id" ] || [ "$link_service_id" != "$service_id" ]; then
-    fail "link $link_id does not belong to this service" "$key"
+    fail "link $link_id does not belong to this service"
+  fi
+
+  # The action is read again too: what it is, whether it may run, and which key it was approved for.
+  action=$(np link action read --linkId "$link_id" --id "$action_id" --format json) || fail "action $action_id of link $link_id could not be read"
+  link_spec_id=$(echo "$link" | jq -r '.specification_id // ""')
+  delete_spec_id=$(np link specification action specification list --linkSpecificationId "$link_spec_id" --format json |
+    jq -r '[.results[]? | select(.slug == "delete-object") | .id] | first // ""') ||
+    fail "the action specifications of link $link_id could not be read"
+  if ! message=$(action_refusal "$action" "$link_id" "$delete_spec_id"); then
+    fail "$message"
+  fi
+
+  # jq -j and a sentinel: $(...) would drop a key's trailing newlines.
+  key=$(echo "$action" | jq -j '.parameters.key // ""'; printf x)
+  key="${key%x}"
+  claimed_key=$(echo "$CONTEXT" | jq -j '.parameters.key // ""'; printf x)
+  claimed_key="${claimed_key%x}"
+  if [ "$claimed_key" != "$key" ]; then
+    fail "the notification's key is not the action's" "$key"
+  fi
+  if ! message=$(key_refusal "$key"); then
+    fail "$message" ""
   fi
 
   if ! message=$(link_refusal "$link" "$link_id" "$key"); then
     fail "$message" "$key"
   fi
 
-  # The bucket comes from the service only, never from a parameter or the link.
-  bucket=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_name // ""')
-  region=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_region // ""')
+  # The bucket comes from the link's service as read back, never from a parameter, the link or the
+  # notification; a notification that names another bucket or region is refused.
+  service=$(np service read --id "$link_service_id" --format json) || fail "service $link_service_id could not be read" "$key"
+  bucket=$(echo "$service" | jq -r '.attributes.bucket_name // ""')
+  region=$(echo "$service" | jq -r '.attributes.bucket_region // ""')
   if [ -z "$bucket" ]; then
     fail "the service has no bucket yet" "$key"
+  fi
+  # A real notification carries the service's attributes, so it names the bucket; the region it may leave out.
+  claimed=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_name // ""')
+  if [ "$claimed" != "$bucket" ]; then
+    fail "the notification's bucket is not the service's" "$key"
+  fi
+  claimed=$(echo "$CONTEXT" | jq -r '.service.attributes.bucket_region // ""')
+  if [ -n "$claimed" ] && [ "$claimed" != "$region" ]; then
+    fail "the notification's region is not the service's" "$key"
   fi
 
   echo "Deleting one object from the bucket of link $link_id"
