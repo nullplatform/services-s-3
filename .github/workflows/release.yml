@@ -42,7 +42,14 @@ permissions:
   id-token: write   # OIDC auth against AWS for the ECR push and the package state
 
 jobs:
+  # The worker baked into the image must pass its tests before anything is released.
+  worker:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/worker.yml
+
   release:
+    needs: worker
     uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
     with:
       image_name: services/s3

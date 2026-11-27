@@ -1,0 +1,236 @@
+import { describe, expect, test } from "bun:test";
+import Ajv from "ajv";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { APPLICATION_NRN, createHandler, runCommand } from "../src/handler";
+import { linkRoleArn, linkRoleName } from "../src/role";
+import type { Platform } from "../src/platform";
+import { CommandError, LINK_ACTIONS, LINK_INPUT_FIELDS, isLinkPayload, parseLinkOperation } from "../src/protocol";
+import type { ObjectStore } from "../src/s3";
+
+// The catalog's action routes run @nullplatform/server's request transform: snake_case keys arrive
+// camelCased BEFORE the input schema is validated (catalog-entities-api src/routes/action.ts), so the
+// spec declares inputs in camelCase while the plugin and the worker keep speaking snake_case. The
+// answer runs the response transform (`transform: { enabled: true }` on the same routes): every key
+// of an output comes back in snake_case, so `X-Amz-Signature` as a key reaches the caller as
+// `x_amz_signature`. An output therefore carries no data in its keys.
+const camel = (key: string) => key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+const snake = (key: string) => key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase();
+const catalogReturns = (output: unknown): unknown =>
+  Array.isArray(output)
+    ? output.map(catalogReturns)
+    : output && typeof output === "object"
+      ? Object.fromEntries(Object.entries(output as Record<string, unknown>).map(([key, value]) => [snake(key), catalogReturns(value)]))
+      : output;
+const catalogSees = (input: unknown): unknown =>
+  input && typeof input === "object" && !Array.isArray(input)
+    ? Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([key, value]) => [camel(key), value]))
+    : input;
+
+// The s3_browser catalog documents against the worker that answers them (link mode): the
+// inputs the schemas accept are the ones the worker accepts, and its real outputs validate.
+
+const root = join(import.meta.dir, "..");
+const read = (path: string) => JSON.parse(readFileSync(join(root, path), "utf8"));
+
+const specification = read("catalog/s3_browser.specification.json");
+const executors: Array<{ action: string; transport: string; timeout_ms: number }> = read("catalog/s3_browser.executors.json");
+const channel = read("catalog/s3_browser.channel.example.json");
+const actions: Record<string, { name: string; execution: string; input: object; output: object; permission?: string }> = specification.schema.actions;
+const ajv = new Ajv({ strict: false });
+
+const APP_NRN = "organization=1:account=2:namespace=3:application=4";
+const executions = new Map<string, { id: string; entity_id: string; entity_specification_id: string; action: string; status: string; input: unknown; actor_type: string; actor_id: string; entity_nrn: string }>();
+const platform: Platform = {
+  async getExecution(_slug, id) {
+    const found = executions.get(id);
+    if (!found) throw new Error(`execution ${id} not found`);
+    return found as never;
+  },
+  async getEntity(_slug, id) {
+    return { application_id: id, nrn: APP_NRN };
+  },
+  async getService(id) {
+    return { id, status: "active", specification_id: "spec-s3", attributes: { bucket_name: "link-bucket", bucket_region: "us-east-1" } };
+  },
+  async getSpecification(id) {
+    return { id, slug: "aws-s3-bucket" };
+  },
+  async isActionGranted() {
+    return true;
+  },
+  async getLink(id) {
+    return { id, status: "active", service_id: "svc-1", entity_nrn: APP_NRN, attributes: { access_level: "read-write", path_prefix: "", browser_enabled: true, role_arn: linkRoleArn(String(id), { accountId: "123456789012" }), iam_role_name: linkRoleName(String(id)) } };
+  },
+};
+const store: ObjectStore = {
+  async list(t, prefix) {
+    return { bucket: t.bucket, region: t.region ?? null, prefix, folders: [{ prefix: `${prefix}x/`, name: "x" }], objects: [{ key: `${prefix}a`, name: "a", size: 1, last_modified: "2026-01-01T00:00:00.000Z", storage_class: "STANDARD", etag: '"e"' }], next_token: "next", truncated: true };
+  },
+  async search(t, prefix, query) {
+    return { bucket: t.bucket, region: t.region ?? null, prefix, query, folders: [{ prefix: `${prefix}Reports/`, name: "Reports" }], objects: [{ key: `${prefix}x/report.csv`, name: "report.csv", size: 1, last_modified: "2026-01-01T00:00:00.000Z", storage_class: "STANDARD", etag: '"e"' }], scanned: 1000, next_token: `${prefix}x/report.csv`, truncated: true };
+  },
+  async head(_t, key) {
+    return { key, size: 1, content_type: "text/plain", last_modified: null, etag: '"e"', storage_class: "STANDARD", metadata: { a: "b" } };
+  },
+  async presign(_t, key) {
+    return { key, url: "https://example.invalid/x", expires_at: "2026-01-01T00:00:00.000Z" };
+  },
+  async exists() {
+    return false;
+  },
+  async presignUpload(_t, key) {
+    return { key, url: "https://example.invalid/", fields: [{ name: "key", value: key }, { name: "Policy", value: "p" }, { name: "X-Amz-Signature", value: "s" }], expires_at: "2026-01-01T00:00:00.000Z" };
+  },
+};
+const handler = createHandler({ platform, store, config: { specifications: ["aws-s3-bucket*"], allowWrites: true, linkRole: { accountId: "123456789012" } }, assumeRole: async () => ({ accessKeyId: "ASIAEXAMPLE", secretAccessKey: "example-secret", sessionToken: "example-token" }) });
+
+const inputs: Record<string, Record<string, unknown>> = {
+  "list-objects": { link_id: "lnk-1", prefix: "docs/", limit: 50, token: "t" },
+  "search-objects": { link_id: "lnk-1", prefix: "docs/", query: "Report", limit: 50, token: "docs/2026/a.csv" },
+  "head-object": { link_id: "lnk-1", key: "docs/a.txt" },
+  "presign-download": { link_id: "lnk-1", key: "docs/a.txt", disposition: "inline" },
+  "presign-upload": { link_id: "lnk-1", key: "docs/a.txt", size: 1024, content_type: "text/plain" },
+};
+const minimal: Record<string, Record<string, unknown>> = {
+  "list-objects": { link_id: "lnk-1" },
+  "search-objects": { link_id: "lnk-1", query: "a" },
+  "head-object": { link_id: "lnk-1", key: "a" },
+  "presign-download": { link_id: "lnk-1", key: "a" },
+  "presign-upload": { link_id: "lnk-1", key: "a", size: 0 },
+};
+let sequence = 0;
+const envelope = (slug: string, input: unknown) => {
+  const id = `exec-${++sequence}`;
+  executions.set(id, { id, entity_id: "ent-4", entity_specification_id: "spec-cat", action: slug, status: "pending", input, actor_type: "user", actor_id: "u-1", entity_nrn: APP_NRN });
+  return payload(id, slug, input);
+};
+// What the link-mode route is handed: the catalog's context, unwrapped from its `{ notification }`.
+const payload = (id: string, slug: string, input: unknown): Record<string, unknown> => ({ id, action: "catalog:action:create", slug, input, specification: { id: "s", slug: "s3_browser" }, entity: { application_id: "4", nrn: APP_NRN }, entity_nrn: APP_NRN, user: { id: null } });
+// What the worker accepts from the catalog's record of the execution.
+const workerAccepts = (slug: string, input: unknown) => {
+  try {
+    parseLinkOperation(slug, input);
+    return true;
+  } catch (error) {
+    if (error instanceof CommandError) return false;
+    throw error;
+  }
+};
+
+describe("s3_browser catalog specification", () => {
+  test("one entity per application: application_id is the key, nrn the NRN", () => {
+    expect(specification.slug).toBe("s3_browser");
+    expect(specification.schema.properties.application_id).toMatchObject({ type: "string", primaryKey: true, autoGenerate: false, pattern: "^\\d+$" });
+    expect(specification.schema.properties.nrn).toMatchObject({ type: "string", nrn: true });
+    // The same pattern the worker enforces on the entity it reads back from the catalog.
+    expect(new RegExp(specification.schema.properties.nrn.pattern).source).toBe(APPLICATION_NRN.source.replace("(\\d+)$", "\\d+$"));
+    const entity = ajv.compile({ type: "object", properties: specification.schema.properties, required: specification.schema.required });
+    expect(entity({ application_id: "4", nrn: APP_NRN })).toBe(true);
+    expect(entity({ application_id: "4", nrn: "organization=1:account=2:namespace=3" })).toBe(false);
+    expect(entity({ application_id: "4", nrn: `${APP_NRN}:scope=1` })).toBe(false);
+    expect(entity({ application_id: "app-4", nrn: APP_NRN })).toBe(false);
+    expect(specification.schema.required.sort()).toEqual(["application_id", "nrn"]);
+  });
+
+  test("declares exactly the link-mode actions, all sync, no per-action permission", () => {
+    expect(Object.keys(actions).sort()).toEqual([...LINK_ACTIONS].sort());
+    // No delete: it is the service's link action, behind the link's approval, and a catalog one would skip it.
+    expect(Object.keys(actions)).not.toContain("delete-object");
+    for (const action of Object.values(actions)) {
+      expect(action.execution).toBe("sync");
+      expect(action.permission).toBeUndefined();
+    }
+  });
+
+  test("every input requires linkId (link_id on the wire), admits nothing extra, and names the fields the worker accepts", () => {
+    for (const [slug, action] of Object.entries(actions)) {
+      const input = action.input as { required: string[]; additionalProperties: boolean; properties: Record<string, { pattern?: string }> };
+      expect(input.required).toContain("linkId");
+      expect(input.additionalProperties).toBe(false);
+      expect(input.properties.linkId.pattern).toBe("^[A-Za-z0-9-]{1,64}$");
+      expect(Object.keys(input.properties).sort()).toEqual([...LINK_INPUT_FIELDS[slug]].map(camel).sort());
+    }
+  });
+
+  for (const slug of LINK_ACTIONS) {
+    test(`${slug}: schemas accept the worker's real input and output`, async () => {
+      const validateInput = ajv.compile(actions[slug].input);
+      const validateOutput = ajv.compile(actions[slug].output);
+      for (const input of [inputs[slug], minimal[slug]]) {
+        expect(validateInput(catalogSees(input))).toBe(true);
+        const result = await runCommand(envelope(slug, input), handler);
+        expect(result.success).toBe(true);
+        const output = JSON.parse(result.data.stdout);
+        expect(output.error).toBeUndefined();
+        expect(validateOutput(output)).toBe(true);
+        // What the caller reads is what the worker wrote: nothing in it changes with its keys.
+        expect(catalogReturns(output)).toEqual(output);
+      }
+    });
+
+    test(`${slug}: schema and worker agree on what to refuse`, () => {
+      const validate = ajv.compile(actions[slug].input);
+      const refused: unknown[] = [
+        { ...inputs[slug], bucket: "other" },
+        { ...inputs[slug], link_id: undefined },
+        { ...inputs[slug], link_id: "../x" },
+        { ...inputs[slug], link_id: "a".repeat(65) },
+        { ...inputs[slug], link_id: 7 },
+      ];
+      const folder = slug === "list-objects" || slug === "search-objects";
+      if (!folder) refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", key: "/abs" }, { link_id: "lnk-1", key: "dir/" });
+      else refused.push({ ...minimal[slug], prefix: "/abs" }, { ...minimal[slug], limit: 0 }, { ...minimal[slug], limit: 1001 });
+      if (slug === "search-objects") {
+        refused.push({ link_id: "lnk-1" }, { link_id: "lnk-1", query: "" }, { link_id: "lnk-1", query: "   " }, { link_id: "lnk-1", query: 7 }, { link_id: "lnk-1", query: "x".repeat(129) }, { link_id: "lnk-1", query: "a", key: "a" });
+      }
+      if (slug === "presign-download") refused.push({ link_id: "lnk-1", key: "a", disposition: "download" }, { link_id: "lnk-1", key: "a", disposition: "Inline" }, { link_id: "lnk-1", key: "a", disposition: "" }, { link_id: "lnk-1", key: "a", disposition: null }, { link_id: "lnk-1", key: "a", disposition: 7 });
+      if (slug === "presign-upload") {
+        refused.push(
+          { link_id: "lnk-1", key: "a" },
+          { link_id: "lnk-1", key: "a", size: -1 },
+          { link_id: "lnk-1", key: "a", size: 1.5 },
+          { link_id: "lnk-1", key: "a", size: "10" },
+          { link_id: "lnk-1", key: "a", size: 1, content_type: "not a type" },
+          { link_id: "lnk-1", key: "a", size: 1, content_type: "text/plain; charset=utf-8" },
+          { link_id: "lnk-1", key: "docs/${filename}", size: 1 },
+        );
+      }
+      for (const input of refused) {
+        const clean = JSON.parse(JSON.stringify(input));
+        expect([slug, clean, validate(catalogSees(clean))]).toEqual([slug, clean, false]);
+        expect([slug, clean, workerAccepts(slug, clean)]).toEqual([slug, clean, false]);
+      }
+    });
+  }
+
+  test("everyone gets every action (no read-object: the worker never handles file content) but not read or list: who may read or change a link is the worker's check", () => {
+    const grants: Array<{ principals: Array<{ type: string }>; actions: string[] }> = specification.schema.authorization.entities.grants;
+    // The execution history stores every signed link and listing; only the admin floor and the
+    // agent's user (granted by install.mjs, its id differs per organization) read it.
+    expect(grants).toEqual([{ principals: [{ type: "*" }], actions: ["action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload"] }]);
+    // Nobody else reads, creates or deletes the entity from the block.
+    for (const verb of ["read", "list", "create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);
+  });
+
+  test("one notification executor per action, 15 s budget", () => {
+    expect(executors.map((executor) => executor.action).sort()).toEqual([...LINK_ACTIONS].sort());
+    for (const executor of executors) expect(executor).toEqual({ action: executor.action, transport: "notification", timeout_ms: 15000 });
+  });
+
+  test("the channel routes catalog executions of s3_browser only, to the aws-s3-bucket worker", () => {
+    expect(channel.type).toBe("agent");
+    expect(channel.source).toEqual(["catalog"]);
+    expect(channel.filters).toEqual({ $and: [{ action: { $eq: "catalog:action:create" } }, { "specification.slug": { $eq: "s3_browser" } }] });
+    // The same image, package and agents as the service: install.mjs sets the selector (AGENT_SELECTOR).
+    expect(channel.configuration.command).toMatchObject({ type: "package-exec", data: { package: "aws-s3-bucket", cmdline: "/app/packages/aws-s3-bucket/entrypoint" } });
+    expect(channel.configuration.command.data.environment.NP_ACTION_CONTEXT).toBe("'${NOTIFICATION_CONTEXT}'");
+  });
+
+  test("what the channel lets through is exactly what the worker's link-mode route takes", () => {
+    const [action, specification] = channel.filters.$and.map((filter: Record<string, { $eq: string }>) => Object.values(filter)[0]!.$eq);
+    expect(isLinkPayload({ action, specification: { slug: specification } })).toBe(true);
+    expect(isLinkPayload({ action, specification: { slug: "aws-s3-bucket" } })).toBe(false);
+    expect(isLinkPayload({ action: "service:action:create", specification: { slug: specification } })).toBe(false);
+  });
+});
