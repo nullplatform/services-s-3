@@ -521,8 +521,6 @@
               }
             ],
             "actions": [
-              "read",
-              "list",
               "action:list-objects",
               "action:search-objects",
               "action:head-object",

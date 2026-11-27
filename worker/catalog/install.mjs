@@ -17,10 +17,12 @@
  * `tags_selectors` as the service's own channel),
  * S3_BROWSER_SPECIFICATIONS (service specifications whose links are seeded, default aws-s3-bucket*).
  *
- * Flags: --dry-run prints every request (secrets redacted) and sends nothing — not even reads, so
- * it shows the plan as if nothing existed and cannot preview the seeding; --skip-channel;
- * --skip-seed; --allow-destructive (sent on the specification PATCH: the catalog rejects narrowing
- * changes, such as a new pattern, without it); --help.
+ * Flags: --agent-user-id <id> (required: the user of AGENT_API_KEY, the `@nullplatform/user=<id>`
+ * group of its token; the specification grants it `read`, since the worker re-reads every execution
+ * with that key and nobody else reads the history); --dry-run prints every request (secrets
+ * redacted) and sends nothing — not even reads, so it shows the plan as if nothing existed and cannot
+ * preview the seeding; --skip-channel; --skip-seed; --allow-destructive (sent on the specification
+ * PATCH: the catalog rejects narrowing changes, such as a new pattern, without it); --help.
  */
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -30,12 +32,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const SPECIFICATION_SLUG = "s3_browser";
 const PAGE = 100;
 
-export const USAGE = `usage: NP_API_KEY=… NRN=organization=… AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs [--dry-run] [--skip-channel] [--skip-seed] [--allow-destructive]`;
+export const USAGE = `usage: NP_API_KEY=… NRN=organization=… AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs --agent-user-id <id> [--dry-run] [--skip-channel] [--skip-seed] [--allow-destructive]`;
 
 export function parseArgs(argv) {
-  const flags = { dryRun: false, skipChannel: false, skipSeed: false, allowDestructive: false, help: false };
-  for (const arg of argv) {
-    if (arg === "--dry-run") flags.dryRun = true;
+  const flags = { agentUserId: undefined, dryRun: false, skipChannel: false, skipSeed: false, allowDestructive: false, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--agent-user-id") flags.agentUserId = parseUserId(argv[(index += 1)]);
+    else if (arg === "--dry-run") flags.dryRun = true;
     else if (arg === "--skip-channel") flags.skipChannel = true;
     else if (arg === "--skip-seed") flags.skipSeed = true;
     else if (arg === "--allow-destructive") flags.allowDestructive = true;
@@ -43,6 +47,24 @@ export function parseArgs(argv) {
     else throw new Error(`unknown argument ${arg}\n${USAGE}`);
   }
   return flags;
+}
+
+/** A catalog principal id is an integer ≥ 1 (the catalog validates it against authz on write). */
+function parseUserId(text) {
+  if (!/^[1-9]\d*$/.test(String(text ?? ""))) throw new Error(`--agent-user-id must be a user id (a positive integer), got ${text ?? "nothing"}\n${USAGE}`);
+  return Number(text);
+}
+
+/**
+ * The specification with `read` granted to the agent's user: the worker re-reads each execution
+ * (`GET /catalog/actions/s3_browser/executions/{id}`) with AGENT_API_KEY, and the file grants `read`
+ * to nobody, since the history holds every signed link and listing. Built from the file on every
+ * run and sent whole (a PATCH replaces arrays), so a re-install never duplicates it.
+ */
+export function withAgentGrant(specification, agentUserId) {
+  const body = structuredClone(specification);
+  body.schema.authorization.entities.grants.push({ principals: [{ type: "user", id: agentUserId }], actions: ["read"] });
+  return body;
 }
 
 /** `organization=1:account=2:namespace=3:application=4[:scope=…]` → the application part, or undefined. */
@@ -209,10 +231,11 @@ async function seedEntities(api, { nrn, specifications, dryRun }, log) {
 export async function install({ env, flags, fetchImpl = fetch, log = console.log, files = here }) {
   const missing = ["NP_API_KEY", "NRN", ...(flags.skipChannel ? [] : ["AGENT_API_KEY", "AGENT_SELECTOR"])].filter((name) => !env[name]);
   if (missing.length) throw new Error(`missing ${missing.join(", ")}\n${USAGE}`);
+  if (flags.agentUserId === undefined) throw new Error(`missing --agent-user-id: the user id of AGENT_API_KEY (the @nullplatform/user=<id> group of its token); without it the worker cannot read the executions (EXECUTION_NOT_VERIFIED)\n${USAGE}`);
   const selector = flags.skipChannel ? undefined : parseSelector(env.AGENT_SELECTOR);
   if (!/^organization=\d+(:account=\d+)?$/.test(env.NRN)) throw new Error(`NRN must be an organization (or account) NRN, got ${env.NRN}`);
   const read = async (name) => JSON.parse(await readFile(join(files, name), "utf8"));
-  const specification = await read("s3_browser.specification.json");
+  const specification = withAgentGrant(await read("s3_browser.specification.json"), flags.agentUserId);
   const executors = await read("s3_browser.executors.json");
   const template = await read("s3_browser.channel.example.json");
   const specifications = (env.S3_BROWSER_SPECIFICATIONS ?? "aws-s3-bucket*").split(",").map((item) => item.trim()).filter(Boolean);

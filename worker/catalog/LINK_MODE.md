@@ -53,14 +53,15 @@ specification has none and the worker refuses the slug (`UNKNOWN_ACTION`).
 
 The worker never handles file content: there is no action that reads an object. The browser reads and writes S3
 directly through the signed links, and to show a file it asks `presign-download` with `disposition: inline`. The catalog
-stores every action's full output, so a signed link ends up in the execution record, which anyone with `entity:read` on
-the application can read while the specification grants `read`/`list` to `*`; that is why the links are short-lived
-(`inline`: 60 s). Closing the history to people means dropping `read`/`list` from the `*` grant and granting them to the
-agent's own principal, which the worker needs to read the execution (step 1). The specification file cannot name it: a
-`user` or `role` principal carries an id that differs per organization, so it is set per installation, not in this file.
+stores every action's full output, so a signed link (and every listing) ends up in the execution record, which
+`GET /catalog/actions/s3_browser/{entity}/history` serves to whoever holds `read` on the entity. So nobody gets `read`
+or `list` from the specification: the history is admin-only (the catalog's `entity:read-admin` floor), and the links
+stay short-lived anyway (`inline`: 60 s). The one exception is the agent's user, which needs `read` to re-read each
+execution (step 1b) and would otherwise refuse every request with `EXECUTION_NOT_VERIFIED`. The specification file
+cannot name it: a `user` principal's id differs per organization, so `install.mjs --agent-user-id` adds that grant.
 
-- Authorization block (`schema.authorization.entities.grants`): principal `{type:"*"}` gets
-  `read`, `list` and the five actions. Who may write to a link's bucket is not decided here: `presign-upload` needs `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
+- Authorization block (`schema.authorization.entities.grants`): principal `{type:"*"}` gets the five actions and
+  nothing else; `install.mjs` adds `read` for `{type:"user", id:<agent user id>}`. Who may write to a link's bucket is not decided here: `presign-upload` needs `service:link:write` on the link (step 3b), a link whose `access_level` writes (step 7) and
   `S3_BROWSER_ALLOW_WRITES=1` on the worker.
 
 ## Errors
@@ -242,8 +243,8 @@ as `invalid_output`. Output schemas therefore describe only the success shape.
 
 - The worker no longer reads link secrets: no `include_secret_attributes` query and no `S3_BROWSER_LINK_SECRETS_QUERY`.
   The agent's API key needs to read links (as the services API returns them by default) and catalog read on
-  `s3_browser` executions (and, only for the demo flag, entities) across the organization; not yet confirmed against a
-  deployed API.
+  `s3_browser` executions (and, only for the demo flag, entities) across the organization. Confirmed in kwik-e-mart
+  (2026-11-27): without the `read` grant to its user the worker refuses with `EXECUTION_NOT_VERIFIED`; with it, it works.
 - To confirm once deployed: `entity_nrn` on the execution read.
 - Confirmed in catalog-entities-api source: `actor_id` on the execution record is the `user` of the token that ran the
   action and `actor_type` is always `user` (`BaseController.getActor`, `EntityService.executeAction`).
@@ -255,7 +256,9 @@ as `invalid_output`. Output schemas therefore describe only the success shape.
 
 `worker/catalog/install.mjs` (Node ≥ 20, no deps), given `NP_API_KEY` (and optional `NP_API_URL`),
 `NRN` (organization NRN for the channel), `AGENT_API_KEY` and `AGENT_SELECTOR` (the agent tags of the aws-s3-bucket
-service's own channel) for the channel and flags:
-creates the `s3_browser` specification (idempotent: PATCH when it exists), its 6 executors, the agent channel
+service's own channel) for the channel, `--agent-user-id <id>` (required: the user of `AGENT_API_KEY`, the
+`@nullplatform/user=<id>` group of its token) and flags:
+creates the `s3_browser` specification with `read` granted to that user (idempotent: PATCH when it exists, the grants
+sent whole), its 6 executors, the agent channel
 from `s3_browser.channel.example.json`, and seeds one `s3_browser` entity per application that has a link to an
 `aws-s3-bucket*` service. `--dry-run` prints every request without sending.

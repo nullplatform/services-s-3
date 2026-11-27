@@ -149,7 +149,9 @@ The worker never reads a file's content: it only signs links (`presign-download`
 directly. Signed links are action outputs, which the catalog stores in the execution record; keep them short-lived.
 
 Files in [`catalog/`](catalog/): [`s3_browser.specification.json`](catalog/s3_browser.specification.json)
-(entity `application_id` + `nrn`, the five actions, all granted to everyone),
+(entity `application_id` + `nrn`, the five actions, all granted to everyone; `read`/`list` to nobody, since the execution
+history stores every signed link and listing: it is admin-only, and `install.mjs` grants `read` only to the agent's user,
+which re-reads each execution),
 [`s3_browser.executors.json`](catalog/s3_browser.executors.json) (five `notification` executors,
 15 s), [`s3_browser.channel.example.json`](catalog/s3_browser.channel.example.json) (agent channel).
 The catalog's gate (`entity:write` on the application) and these grants decide who may run an action at all. Who may
@@ -170,9 +172,13 @@ application. That is not the only way: the bash route below trusts its envelope 
 ### Install
 
 ```bash
-NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs --dry-run   # prints, sends nothing
-NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs
+NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs --agent-user-id <id> --dry-run   # prints, sends nothing
+NP_API_KEY=… NRN=organization=<id> AGENT_API_KEY=… AGENT_SELECTOR='{"<tag>":"<value>"}' node catalog/install.mjs --agent-user-id <id>
 ```
+
+`--agent-user-id` is required: the user of `AGENT_API_KEY` (its token's `@nullplatform/user=<id>` group), which the
+specification grants `read` so the worker can re-read each execution; without it every request fails with
+`EXECUTION_NOT_VERIFIED`, so the installer refuses to run. A re-install sends the grants whole, never a second copy.
 
 It creates or updates the specification (`--allow-destructive` when an update narrows it), the five executors and the
 agent channel (`--skip-channel`), and seeds one `s3_browser` entity per application with a link to an `aws-s3-bucket*`
@@ -186,8 +192,8 @@ against a real API.
 - The worker no longer reads link secrets: no `include_secret_attributes` query, no `S3_BROWSER_LINK_SECRETS_QUERY`,
   and the agent's API key does not need `service:link:read-secrets` (earlier versions did, to read the application's key).
   It reads the link as the services API returns it by default.
-- To confirm: that an agent API key can read links and hold catalog read on
-  `s3_browser` executions (and entities, for the demo flag only).
+- Confirmed in kwik-e-mart (2026-11-27): the agent's API key reads the `s3_browser` executions once its user holds the
+  `read` grant. To confirm: that an agent API key can read links, and `s3_browser` entities (demo flag only).
 - To confirm once deployed: `entity_nrn` on `GET /catalog/actions/s3_browser/executions/{id}`.
 - Confirmed in catalog-entities-api source: the record's `actor_id` is the `user` of the token that ran the action, and
   `actor_type` is always `user` (`BaseController.getActor`).

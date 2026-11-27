@@ -204,13 +204,13 @@ describe("s3_browser catalog specification", () => {
     });
   }
 
-  test("everyone gets read, list and every action (no read-object: the worker never handles file content): who may read or change a link is the worker's check", () => {
+  test("everyone gets every action (no read-object: the worker never handles file content) but not read or list: who may read or change a link is the worker's check", () => {
     const grants: Array<{ principals: Array<{ type: string }>; actions: string[] }> = specification.schema.authorization.entities.grants;
-    expect(grants).toEqual([
-      { principals: [{ type: "*" }], actions: ["read", "list", "action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload"] },
-    ]);
-    // Nobody creates or deletes the entity from the block.
-    for (const verb of ["create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);
+    // The execution history stores every signed link and listing; only the admin floor and the
+    // agent's user (granted by install.mjs, its id differs per organization) read it.
+    expect(grants).toEqual([{ principals: [{ type: "*" }], actions: ["action:list-objects", "action:search-objects", "action:head-object", "action:presign-download", "action:presign-upload"] }]);
+    // Nobody else reads, creates or deletes the entity from the block.
+    for (const verb of ["read", "list", "create", "write", "delete", "*"]) expect(grants.flatMap((grant) => grant.actions)).not.toContain(verb);
   });
 
   test("one notification executor per action, 15 s budget", () => {
